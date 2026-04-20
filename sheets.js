@@ -4,22 +4,35 @@ const { parse } = require('csv-parse/sync');
 const CACHE_TTL = 60 * 1000;
 let cache = { data: null, ts: 0 };
 
-// индексы колонок (0-based), строка 1 — заголовки, строка 2 — русские подписи, строка 3+ — данные
 const COL = {
-  kontejner:   0,   // КОНТЕЙНЕР
-  napravlenie: 1,   // НАПРАВЛЕНИЕ
-  otplytie:    2,   // ОТПЛЫТИЕ
-  kitaj:       3,   // ПРИБЫЛ В КИТАЙ
-  jdStart:     4,   // СТАРТ ЖД
-  location:    5,   // МЕСТОПОЛОЖЕНИЕ
-  rasstoyanie: 6,   // РАССТОЯНИЕ ДО СТАНЦИИ ПЕРЕГРУЗКИ
-  peregruzka:  7,   // ДАТА ПРИБЫТИЯ НА СТАНЦИЮ ПЕРЕГРУЗКИ
-  mashina:     8,   // НОМ МАШ
-  phone:       9,   // НОМ ВОДИТЕЛЯ
-  granica:     10,  // ГРАНИЦА
-  pribytie:    11,  // ПРИБЫТИЕ
-  updated:     12,  // ФАКТИЧЕСКОЕ ПРИБЫТИЕ
+  kontejner:   0,
+  napravlenie: 1,
+  otplytie:    2,
+  kitaj:       3,
+  jdStart:     4,
+  location:    5,
+  rasstoyanie: 6,
+  peregruzka:  7,
+  mashina:     8,
+  phone:       9,
+  granica:     10,
+  pribytie:    11,
+  updated:     12,
 };
+
+const WATCHABLE_FIELDS = [
+  { idx: COL.napravlenie, label: '🏁 Направление' },
+  { idx: COL.otplytie,    label: '🚢 Отплытие' },
+  { idx: COL.kitaj,       label: '🇨🇳 Прибыл в Китай' },
+  { idx: COL.jdStart,     label: '🚆 Старт ЖД' },
+  { idx: COL.location,    label: '📍 Местоположение' },
+  { idx: COL.rasstoyanie, label: '📏 Расстояние' },
+  { idx: COL.peregruzka,  label: '🚉 Станция перегрузки' },
+  { idx: COL.mashina,     label: '🚛 Машина' },
+  { idx: COL.granica,     label: '🛂 Граница' },
+  { idx: COL.pribytie,    label: '🏠 Прибытие' },
+  { idx: COL.updated,     label: '🕐 Обновлено' },
+];
 
 async function loadSheet() {
   const now = Date.now();
@@ -27,7 +40,6 @@ async function loadSheet() {
 
   const res = await axios.get(process.env.SHEET_CSV_URL, { timeout: 15000 });
 
-  // columns: false — читаем как массивы, без зависимости от заголовков
   const allRows = parse(res.data, {
     columns: false,
     skip_empty_lines: true,
@@ -35,17 +47,34 @@ async function loadSheet() {
     bom: true,
   });
 
-  // пропускаем строки 0 и 1 (заголовки на корейском и русском)
-  // оставляем только строки где первая колонка похожа на номер контейнера
   const rows = allRows.slice(2).filter(r => /^[A-Z]{4}\d+$/i.test(String(r[0]).trim()));
 
   cache = { data: rows, ts: now };
   return rows;
 }
 
+async function loadSheetFresh() {
+  cache = { data: null, ts: 0 };
+  return loadSheet();
+}
+
 function getCol(row, idx) {
   const val = row[idx];
   return val && String(val).trim() ? String(val).trim() : '—';
+}
+
+function hasVal(row, idx) {
+  const val = row[idx];
+  return !!(val && String(val).trim());
+}
+
+function computeStatus(row) {
+  if (hasVal(row, COL.pribytie))   return '🏁 Прибыл';
+  if (hasVal(row, COL.granica))    return '🛂 На границе';
+  if (hasVal(row, COL.mashina))    return '🚛 Едет на машине';
+  if (hasVal(row, COL.peregruzka)) return '🚉 На станции перегрузки';
+  if (hasVal(row, COL.location))   return '🚆 В пути (ЖД)';
+  return '🚢 В море';
 }
 
 async function findKontejner(nomer) {
@@ -57,6 +86,7 @@ async function findKontejner(nomer) {
 function formatStatus(row) {
   const f = idx => getCol(row, idx);
   return `📦 *Контейнер:* ${f(COL.kontejner)}
+🔘 *Статус:* ${computeStatus(row)}
 
 🏁 Направление: ${f(COL.napravlenie)}
 🚢 Отплытие: ${f(COL.otplytie)}
@@ -72,4 +102,4 @@ function formatStatus(row) {
 🕐 Обновлено: ${f(COL.updated)}`;
 }
 
-module.exports = { findKontejner, formatStatus };
+module.exports = { findKontejner, formatStatus, loadSheetFresh, WATCHABLE_FIELDS };

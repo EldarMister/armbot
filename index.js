@@ -1,12 +1,81 @@
 require('dotenv').config();
 const express = require('express');
-const { findKontejner, formatStatus } = require('./sheets');
+const { findKontejner, formatStatus, loadSheetFresh, WATCHABLE_FIELDS } = require('./sheets');
 const wa = require('./whatsapp');
 
 const app = express();
 app.use(express.json());
 
 const userState = new Map();
+
+// subscriptions: containerNomer (uppercase) → { users: Set<phone>, snapshot: row[] }
+const subscriptions = new Map();
+// userSubscriptions: phone → Set<containerNomer>
+const userSubscriptions = new Map();
+
+function subscribe(phone, nomer, row) {
+  const key = nomer.toUpperCase();
+  if (!subscriptions.has(key)) {
+    subscriptions.set(key, { users: new Set(), snapshot: [...row] });
+  } else {
+    subscriptions.get(key).snapshot = [...row];
+  }
+  subscriptions.get(key).users.add(phone);
+
+  if (!userSubscriptions.has(phone)) userSubscriptions.set(phone, new Set());
+  userSubscriptions.get(phone).add(key);
+}
+
+function unsubscribeAll(phone) {
+  const containers = userSubscriptions.get(phone);
+  if (!containers || containers.size === 0) return 0;
+  const count = containers.size;
+  for (const key of containers) {
+    const sub = subscriptions.get(key);
+    if (sub) {
+      sub.users.delete(phone);
+      if (sub.users.size === 0) subscriptions.delete(key);
+    }
+  }
+  userSubscriptions.delete(phone);
+  return count;
+}
+
+async function checkForUpdates() {
+  if (subscriptions.size === 0) return;
+  try {
+    const rows = await loadSheetFresh();
+    for (const [key, sub] of subscriptions.entries()) {
+      const newRow = rows.find(r => String(r[0]).toUpperCase().trim() === key);
+      if (!newRow) continue;
+
+      const changes = [];
+      for (const { idx, label } of WATCHABLE_FIELDS) {
+        const oldVal = sub.snapshot[idx] != null ? String(sub.snapshot[idx]).trim() : '';
+        const newVal = newRow[idx] != null ? String(newRow[idx]).trim() : '';
+        if (oldVal !== newVal) changes.push(`${label}: ${oldVal || '—'} → ${newVal || '—'}`);
+      }
+
+      if (changes.length === 0) continue;
+      sub.snapshot = [...newRow];
+
+      const notification =
+        `🔔 Обновление по контейнеру *${key}*\n\n` +
+        `Изменения:\n${changes.join('\n')}\n\n` +
+        `Актуальный статус:\n${formatStatus(newRow)}`;
+
+      for (const phone of sub.users) {
+        await wa.sendText(phone, notification).catch(err =>
+          console.error(`notify ${phone}:`, err.message)
+        );
+      }
+    }
+  } catch (err) {
+    console.error('checkForUpdates error:', err.message);
+  }
+}
+
+setInterval(checkForUpdates, 60 * 60 * 1000);
 
 // проверка вебхука при подключении в Meta Dashboard
 app.get('/webhook', (req, res) => {
@@ -57,6 +126,17 @@ app.post('/webhook', async (req, res) => {
       return;
     }
 
+    if (/^отписаться$/i.test(tekst)) {
+      const count = unsubscribeAll(from);
+      await wa.sendText(
+        from,
+        count > 0
+          ? `✅ Вы отписались от обновлений по ${count} контейнер(ам).`
+          : `ℹ️ У вас нет активных подписок.`
+      );
+      return;
+    }
+
     const looksLikeKontejner = /^[A-Za-z]{4}\d{6,8}$/.test(tekst);
     if (state === 'wait_nomer' || looksLikeKontejner) {
       userState.set(from, 'idle');
@@ -70,6 +150,7 @@ app.post('/webhook', async (req, res) => {
           return;
         }
         await wa.sendText(from, formatStatus(row));
+        subscribe(from, tekst, row);
         await wa.sendText(from, `🔔 Вы подписались на обновления контейнера *${tekst.toUpperCase()}*`);
       } catch (err) {
         console.error('sheet error:', err.message);
