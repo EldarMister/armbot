@@ -9,13 +9,22 @@ const headers = () => ({
 
 const url = () => `${API}/${process.env.PHONE_NUMBER_ID}/messages`;
 
+async function post(payload) {
+  try {
+    return await axios.post(url(), payload, { headers: headers() });
+  } catch (err) {
+    console.error('META API ERROR:', JSON.stringify(err.response?.data || err.message, null, 2));
+    throw err;
+  }
+}
+
 async function sendText(to, text) {
-  return axios.post(url(), {
+  return post({
     messaging_product: 'whatsapp',
     to,
     type: 'text',
     text: { body: text, preview_url: false },
-  }, { headers: headers() });
+  });
 }
 
 async function sendWelcome(to) {
@@ -27,7 +36,7 @@ async function sendWelcome(to) {
     '• Узнать актуальный статус контейнера\n\n' +
     'Пожалуйста, выберите действие ниже 👇';
 
-  return axios.post(url(), {
+  return post({
     messaging_product: 'whatsapp',
     to,
     type: 'interactive',
@@ -40,15 +49,15 @@ async function sendWelcome(to) {
         ],
       },
     },
-  }, { headers: headers() });
+  });
 }
 
 async function markRead(messageId) {
-  return axios.post(url(), {
+  return post({
     messaging_product: 'whatsapp',
     status: 'read',
     message_id: messageId,
-  }, { headers: headers() });
+  });
 }
 
 module.exports = { sendText, sendWelcome, markRead };
