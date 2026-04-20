@@ -52,12 +52,15 @@ async function sendWelcome(to) {
   });
 }
 
+// markRead не кидает ошибку — просто игнорируем если упало
 async function markRead(messageId) {
-  return post({
-    messaging_product: 'whatsapp',
-    status: 'read',
-    message_id: messageId,
-  });
+  try {
+    await axios.post(url(), {
+      messaging_product: 'whatsapp',
+      status: 'read',
+      message_id: messageId,
+    }, { headers: headers() });
+  } catch (_) {}
 }
 
 module.exports = { sendText, sendWelcome, markRead };
