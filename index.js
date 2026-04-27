@@ -1,5 +1,7 @@
 require('dotenv').config();
 const express = require('express');
+const fs = require('fs');
+const path = require('path');
 const { findKontejner, formatStatus, loadSheetFresh, WATCHABLE_FIELDS } = require('./sheets');
 const wa = require('./whatsapp');
 
@@ -13,6 +15,47 @@ const subscriptions = new Map();
 // userSubscriptions: phone → Set<containerNomer>
 const userSubscriptions = new Map();
 
+// ─── Персистентность подписок ────────────────────────────────────────────────
+
+const SUBS_FILE = path.join(__dirname, 'subscriptions.json');
+
+function saveSubs() {
+  const data = {};
+  for (const [key, sub] of subscriptions.entries()) {
+    data[key] = { users: [...sub.users], snapshot: sub.snapshot };
+  }
+  try {
+    fs.writeFileSync(SUBS_FILE, JSON.stringify(data, null, 2), 'utf8');
+  } catch (err) {
+    console.error('saveSubs error:', err.message);
+  }
+}
+
+function loadSubs() {
+  try {
+    if (!fs.existsSync(SUBS_FILE)) return;
+    const data = JSON.parse(fs.readFileSync(SUBS_FILE, 'utf8'));
+    for (const [key, val] of Object.entries(data)) {
+      subscriptions.set(key, {
+        users: new Set(val.users),
+        snapshot: val.snapshot,
+      });
+      for (const phone of val.users) {
+        if (!userSubscriptions.has(phone)) userSubscriptions.set(phone, new Set());
+        userSubscriptions.get(phone).add(key);
+      }
+    }
+    console.log(`loaded ${subscriptions.size} subscription(s) from disk`);
+  } catch (err) {
+    console.error('loadSubs error:', err.message);
+  }
+}
+
+// Загружаем подписки при старте сервера
+loadSubs();
+
+// ─── Работа с подписками ─────────────────────────────────────────────────────
+
 function subscribe(phone, nomer, row) {
   const key = nomer.toUpperCase();
   if (!subscriptions.has(key)) {
@@ -24,6 +67,8 @@ function subscribe(phone, nomer, row) {
 
   if (!userSubscriptions.has(phone)) userSubscriptions.set(phone, new Set());
   userSubscriptions.get(phone).add(key);
+
+  saveSubs();
 }
 
 function unsubscribeAll(phone) {
@@ -38,11 +83,15 @@ function unsubscribeAll(phone) {
     }
   }
   userSubscriptions.delete(phone);
+  saveSubs();
   return count;
 }
 
+// ─── Проверка обновлений (каждый час) ────────────────────────────────────────
+
 async function checkForUpdates() {
   if (subscriptions.size === 0) return;
+  console.log(`checkForUpdates: checking ${subscriptions.size} container(s)...`);
   try {
     const rows = await loadSheetFresh();
     for (const [key, sub] of subscriptions.entries()) {
@@ -57,7 +106,9 @@ async function checkForUpdates() {
       }
 
       if (changes.length === 0) continue;
+
       sub.snapshot = [...newRow];
+      saveSubs(); // сохраняем новый снимок
 
       const notification =
         `🔔 Обновление по контейнеру *${key}*\n\n` +
@@ -77,7 +128,8 @@ async function checkForUpdates() {
 
 setInterval(checkForUpdates, 60 * 60 * 1000);
 
-// проверка вебхука при подключении в Meta Dashboard
+// ─── Webhook ─────────────────────────────────────────────────────────────────
+
 app.get('/webhook', (req, res) => {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
