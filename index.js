@@ -3,6 +3,7 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const { findKontejner, formatStatus, loadSheetFresh, WATCHABLE_FIELDS } = require('./sheets');
+const { getContainerFiles } = require('./drive');
 const wa = require('./whatsapp');
 
 const app = express();
@@ -10,12 +11,23 @@ app.use(express.json());
 
 const userState = new Map();
 
-// subscriptions: containerNomer (uppercase) → { users: Set<phone>, snapshot: row[] }
-const subscriptions = new Map();
-// userSubscriptions: phone → Set<containerNomer>
-const userSubscriptions = new Map();
+// ─── Авторизация для раздела «Документы» ────────────────────────────────────
+// В .env: ALLOWED_PHONES=79001234567,996700123456  (через запятую, без пробелов)
+const ALLOWED = new Set(
+  (process.env.ALLOWED_PHONES || '')
+    .split(',')
+    .map(p => p.trim())
+    .filter(Boolean)
+);
 
-// ─── Персистентность подписок ────────────────────────────────────────────────
+function isAllowed(phone) {
+  return ALLOWED.has(phone);
+}
+
+// ─── Подписки ────────────────────────────────────────────────────────────────
+
+const subscriptions = new Map();
+const userSubscriptions = new Map();
 
 const SUBS_FILE = path.join(__dirname, 'subscriptions.json');
 
@@ -51,10 +63,7 @@ function loadSubs() {
   }
 }
 
-// Загружаем подписки при старте сервера
 loadSubs();
-
-// ─── Работа с подписками ─────────────────────────────────────────────────────
 
 function subscribe(phone, nomer, row) {
   const key = nomer.toUpperCase();
@@ -64,10 +73,8 @@ function subscribe(phone, nomer, row) {
     subscriptions.get(key).snapshot = [...row];
   }
   subscriptions.get(key).users.add(phone);
-
   if (!userSubscriptions.has(phone)) userSubscriptions.set(phone, new Set());
   userSubscriptions.get(phone).add(key);
-
   saveSubs();
 }
 
@@ -108,7 +115,7 @@ async function checkForUpdates() {
       if (changes.length === 0) continue;
 
       sub.snapshot = [...newRow];
-      saveSubs(); // сохраняем новый снимок
+      saveSubs();
 
       const notification =
         `🔔 Обновление по контейнеру *${key}*\n\n` +
@@ -127,6 +134,42 @@ async function checkForUpdates() {
 }
 
 setInterval(checkForUpdates, 60 * 60 * 1000);
+
+// ─── Отправка документов ─────────────────────────────────────────────────────
+
+async function sendDocs(phone, containerNomer) {
+  const key = containerNomer.toUpperCase();
+  try {
+    const files = await getContainerFiles(key);
+
+    if (files === null) {
+      await wa.sendText(phone,
+        `📁 Папка для контейнера *${key}* не найдена.\n\nВозможно, документы ещё не загружены.`
+      );
+      return;
+    }
+
+    if (files.length === 0) {
+      await wa.sendText(phone,
+        `📂 Папка контейнера *${key}* пуста — документы ещё не загружены.`
+      );
+      return;
+    }
+
+    await wa.sendText(phone, `📄 Документы по контейнеру *${key}* — ${files.length} файл(ов):`);
+
+    for (const file of files) {
+      // Пробуем отправить как документ WhatsApp
+      await wa.sendDocument(phone, file.url, file.name).catch(async () => {
+        // Если не получилось — шлём ссылку текстом
+        await wa.sendText(phone, `📋 *${file.name}*\n🔗 ${file.viewUrl}`);
+      });
+    }
+  } catch (err) {
+    console.error('sendDocs error:', err.message);
+    await wa.sendText(phone, '⚠️ Не удалось получить документы. Попробуйте позже.');
+  }
+}
 
 // ─── Webhook ─────────────────────────────────────────────────────────────────
 
@@ -155,10 +198,26 @@ app.post('/webhook', async (req, res) => {
 
     wa.markRead(msg.id).catch(() => {});
 
-    // клик по кнопке "Статус"
-    if (msg.type === 'interactive' && msg.interactive?.button_reply?.id === 'btn_status') {
-      userState.set(from, 'wait_nomer');
-      await wa.sendText(from, '📦 Введите номер контейнера:');
+    // ── Интерактивные кнопки ──────────────────────────────────────────────────
+    if (msg.type === 'interactive') {
+      const btnId = msg.interactive?.button_reply?.id;
+
+      if (btnId === 'btn_status') {
+        userState.set(from, 'wait_nomer');
+        await wa.sendText(from, '📦 Введите номер контейнера:');
+        return;
+      }
+
+      if (btnId === 'btn_docs') {
+        if (!isAllowed(from)) {
+          await wa.sendText(from, '🚫 У вас нет доступа к этому разделу.');
+          return;
+        }
+        userState.set(from, 'wait_docs_nomer');
+        await wa.sendText(from, '📄 Введите номер контейнера для получения документов:');
+        return;
+      }
+
       return;
     }
 
@@ -166,18 +225,21 @@ app.post('/webhook', async (req, res) => {
 
     const tekst = (msg.text?.body || '').trim();
 
+    // ── Приветствие / меню ────────────────────────────────────────────────────
     if (/^(\/?start|привет|здравствуйте|меню|menu|hi|hello|салам|башта)$/i.test(tekst)) {
       userState.set(from, 'idle');
-      await wa.sendWelcome(from);
+      await wa.sendWelcome(from, isAllowed(from));
       return;
     }
 
+    // ── Текстовый запрос статуса ──────────────────────────────────────────────
     if (/^статус$/i.test(tekst)) {
       userState.set(from, 'wait_nomer');
       await wa.sendText(from, '📦 Введите номер контейнера:');
       return;
     }
 
+    // ── Отписка ───────────────────────────────────────────────────────────────
     if (/^отписаться$/i.test(tekst)) {
       const count = unsubscribeAll(from);
       await wa.sendText(
@@ -189,6 +251,14 @@ app.post('/webhook', async (req, res) => {
       return;
     }
 
+    // ── Ожидаем номер для документов ─────────────────────────────────────────
+    if (state === 'wait_docs_nomer') {
+      userState.set(from, 'idle');
+      await sendDocs(from, tekst);
+      return;
+    }
+
+    // ── Ожидаем номер для статуса (или авто-распознавание) ───────────────────
     const looksLikeKontejner = /^[A-Za-z]{4}\d{6,8}$/.test(tekst);
     if (state === 'wait_nomer' || looksLikeKontejner) {
       userState.set(from, 'idle');
@@ -211,7 +281,7 @@ app.post('/webhook', async (req, res) => {
       return;
     }
 
-    await wa.sendWelcome(from);
+    await wa.sendWelcome(from, isAllowed(from));
 
   } catch (err) {
     console.error('webhook error:', err.message);

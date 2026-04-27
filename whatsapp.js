@@ -27,14 +27,27 @@ async function sendText(to, text) {
   });
 }
 
-async function sendWelcome(to) {
+/**
+ * @param {string} to  - номер телефона
+ * @param {boolean} withDocs - показывать ли кнопку «Документы» (только для авторизованных)
+ */
+async function sendWelcome(to, withDocs = false) {
   const body =
     '👋 *Добро пожаловать в ARM SHORING*\n\n' +
     'Мы обеспечиваем надёжную доставку автомобилей из Южной Кореи в страны Центральной Азии.\n\n' +
     '🚢 Корея → Кыргызстан / Казахстан\n\n' +
     'С помощью этого бота вы можете:\n' +
-    '• Узнать актуальный статус контейнера\n\n' +
-    'Пожалуйста, выберите действие ниже 👇';
+    '• Узнать актуальный статус контейнера\n' +
+    (withDocs ? '• Получить документы по контейнеру\n' : '') +
+    '\nПожалуйста, выберите действие ниже 👇';
+
+  const buttons = [
+    { type: 'reply', reply: { id: 'btn_status', title: '📦 Статус' } },
+  ];
+
+  if (withDocs) {
+    buttons.push({ type: 'reply', reply: { id: 'btn_docs', title: '📄 Документы' } });
+  }
 
   return post({
     messaging_product: 'whatsapp',
@@ -43,12 +56,21 @@ async function sendWelcome(to) {
     interactive: {
       type: 'button',
       body: { text: body },
-      action: {
-        buttons: [
-          { type: 'reply', reply: { id: 'btn_status', title: '📦 Статус' } },
-        ],
-      },
+      action: { buttons },
     },
+  });
+}
+
+/**
+ * Отправляет PDF-файл как документ WhatsApp.
+ * link должен быть публично доступным URL.
+ */
+async function sendDocument(to, link, filename) {
+  return post({
+    messaging_product: 'whatsapp',
+    to,
+    type: 'document',
+    document: { link, filename },
   });
 }
 
@@ -63,4 +85,4 @@ async function markRead(messageId) {
   } catch (_) {}
 }
 
-module.exports = { sendText, sendWelcome, markRead };
+module.exports = { sendText, sendWelcome, sendDocument, markRead };
