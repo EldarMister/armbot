@@ -5,13 +5,16 @@ const { findKontejner, formatStatus, loadSheetFresh, WATCHABLE_FIELDS } = requir
 const { getContainerFiles } = require('./drive');
 const wa = require('./whatsapp');
 const db = require('./db');
-const { renderAdminPage } = require('./adminPage');
+const { renderAdminPage, renderLoginPage } = require('./adminPage');
 const { extractContainerNumber, getEnv, normalizeContainerKey } = require('./env');
 
 const app = express();
 app.use(express.json());
+app.use(express.urlencoded({ extended: false }));
 
 const userState = new Map();
+const ADMIN_COOKIE_NAME = 'arm_admin_session';
+const ADMIN_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 
 // ─── Авторизация для раздела «Документы» ────────────────────────────────────
 
@@ -69,10 +72,110 @@ function getAdminPassword() {
   return getEnv('WEB_ADMIN_PASSWORD') || getEnv('ADMIN_PASSWORD') || getEnv('WEBHOOK_VERIFY_TOKEN');
 }
 
+function getAdminUser() {
+  return getEnv('WEB_ADMIN_USER') || getEnv('ADMIN_USER') || 'admin';
+}
+
+function getAdminSessionSecret() {
+  return getEnv('WEB_ADMIN_SESSION_SECRET') || getAdminPassword();
+}
+
 function timingSafeStringEqual(a, b) {
   const left = Buffer.from(String(a || ''));
   const right = Buffer.from(String(b || ''));
   return left.length === right.length && crypto.timingSafeEqual(left, right);
+}
+
+function signAdminPayload(payload) {
+  const secret = getAdminSessionSecret();
+  if (!secret) return '';
+  return crypto.createHmac('sha256', secret).update(payload).digest('base64url');
+}
+
+function createAdminSessionToken(user) {
+  const payload = Buffer.from(JSON.stringify({
+    user,
+    exp: Date.now() + ADMIN_SESSION_TTL_MS,
+  })).toString('base64url');
+  return `${payload}.${signAdminPayload(payload)}`;
+}
+
+function readCookie(req, name) {
+  const header = String(req.headers.cookie || '');
+  for (const part of header.split(';')) {
+    const item = part.trim();
+    const sep = item.indexOf('=');
+    if (sep === -1) continue;
+    if (item.slice(0, sep) !== name) continue;
+    try {
+      return decodeURIComponent(item.slice(sep + 1));
+    } catch {
+      return item.slice(sep + 1);
+    }
+  }
+  return '';
+}
+
+function getAdminSessionUser(req) {
+  const token = readCookie(req, ADMIN_COOKIE_NAME);
+  const secret = getAdminSessionSecret();
+  if (!token || !secret) return null;
+
+  const [payload, signature] = token.split('.');
+  if (!payload || !signature) return null;
+  if (!timingSafeStringEqual(signature, signAdminPayload(payload))) return null;
+
+  try {
+    const data = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+    if (!data.exp || Date.now() > data.exp) return null;
+    if (!timingSafeStringEqual(data.user, getAdminUser())) return null;
+    return data.user;
+  } catch {
+    return null;
+  }
+}
+
+function isHttpsRequest(req) {
+  return req.secure || String(req.get('x-forwarded-proto') || '').split(',')[0] === 'https';
+}
+
+function setAdminSessionCookie(req, res, user) {
+  res.cookie(ADMIN_COOKIE_NAME, createAdminSessionToken(user), {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: isHttpsRequest(req),
+    maxAge: ADMIN_SESSION_TTL_MS,
+    path: '/admin',
+  });
+}
+
+function clearAdminSessionCookie(req, res) {
+  res.clearCookie(ADMIN_COOKIE_NAME, {
+    sameSite: 'lax',
+    secure: isHttpsRequest(req),
+    path: '/admin',
+  });
+}
+
+function sanitizeAdminNext(value) {
+  const next = String(value || '');
+  if (!next.startsWith('/admin') || next.startsWith('//') || next.startsWith('/admin/login')) {
+    return '/admin';
+  }
+  return next;
+}
+
+function isBasicAdmin(req) {
+  const header = req.headers.authorization || '';
+  const [scheme, encoded] = header.split(' ');
+  if (scheme !== 'Basic' || !encoded) return false;
+
+  try {
+    const [user, pass] = Buffer.from(encoded, 'base64').toString('utf8').split(':');
+    return timingSafeStringEqual(user, getAdminUser()) && timingSafeStringEqual(pass, getAdminPassword());
+  } catch {
+    return false;
+  }
 }
 
 function requireAdmin(req, res, next) {
@@ -81,21 +184,14 @@ function requireAdmin(req, res, next) {
     return res.status(503).send('Set WEB_ADMIN_PASSWORD to enable admin panel.');
   }
 
-  const header = req.headers.authorization || '';
-  const [scheme, encoded] = header.split(' ');
-  if (scheme !== 'Basic' || !encoded) {
-    res.set('WWW-Authenticate', 'Basic realm="ARM WhatsApp Admin"');
-    return res.sendStatus(401);
-  }
-
-  const [user, pass] = Buffer.from(encoded, 'base64').toString('utf8').split(':');
-  const expectedUser = getEnv('WEB_ADMIN_USER') || getEnv('ADMIN_USER') || 'admin';
-  if (timingSafeStringEqual(user, expectedUser) && timingSafeStringEqual(pass, password)) {
+  if (getAdminSessionUser(req) || isBasicAdmin(req)) {
     return next();
   }
 
-  res.set('WWW-Authenticate', 'Basic realm="ARM WhatsApp Admin"');
-  return res.sendStatus(401);
+  if (req.originalUrl.startsWith('/admin/api')) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  return res.redirect(`/admin/login?next=${encodeURIComponent(sanitizeAdminNext(req.originalUrl))}`);
 }
 
 function accessFromEnv() {
@@ -106,10 +202,46 @@ function accessFromEnv() {
   }));
 }
 
+app.get('/admin/login', (req, res) => {
+  if (getAdminSessionUser(req)) {
+    return res.redirect(sanitizeAdminNext(req.query.next));
+  }
+  res.type('html').send(renderLoginPage({
+    next: sanitizeAdminNext(req.query.next),
+    error: '',
+  }));
+});
+
+app.post('/admin/login', (req, res) => {
+  const password = getAdminPassword();
+  if (!password) {
+    return res.status(503).send('Set WEB_ADMIN_PASSWORD to enable admin panel.');
+  }
+
+  const user = String(req.body?.user || '');
+  const pass = String(req.body?.password || '');
+  const next = sanitizeAdminNext(req.body?.next);
+
+  if (timingSafeStringEqual(user, getAdminUser()) && timingSafeStringEqual(pass, password)) {
+    setAdminSessionCookie(req, res, getAdminUser());
+    return res.redirect(next);
+  }
+
+  return res.status(401).type('html').send(renderLoginPage({
+    next,
+    error: 'Неверный логин или пароль',
+  }));
+});
+
 app.use('/admin', requireAdmin);
 
+app.post('/admin/logout', (req, res) => {
+  clearAdminSessionCookie(req, res);
+  res.redirect('/admin/login');
+});
+
 app.get('/admin', (req, res) => {
-  res.type('html').send(renderAdminPage());
+  res.type('html').send(renderAdminPage({ user: getAdminSessionUser(req) || getAdminUser() }));
 });
 
 app.get('/admin/api/chats', async (req, res) => {

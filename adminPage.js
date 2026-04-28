@@ -1,4 +1,120 @@
-function renderAdminPage() {
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, ch => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#039;',
+  }[ch]));
+}
+
+function renderLoginPage({ next = '/admin', error = '' } = {}) {
+  return `<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Вход в ARM WhatsApp Admin</title>
+  <style>
+    :root {
+      --bg: #f4f6f8;
+      --panel: #ffffff;
+      --line: #d9dee7;
+      --text: #17212f;
+      --muted: #657083;
+      --brand: #0f766e;
+      --brand-dark: #115e59;
+      --danger: #b42318;
+    }
+    * { box-sizing: border-box; }
+    body {
+      min-height: 100vh;
+      margin: 0;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Arial, sans-serif;
+    }
+    .login {
+      width: min(100%, 420px);
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 28px;
+      box-shadow: 0 20px 40px rgba(23, 33, 47, 0.08);
+    }
+    h1 {
+      margin: 0 0 6px;
+      font-size: 22px;
+      line-height: 1.2;
+    }
+    .hint {
+      margin: 0 0 22px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+    label {
+      display: block;
+      margin: 14px 0 6px;
+      font-size: 13px;
+      font-weight: 700;
+    }
+    input, button {
+      width: 100%;
+      font: inherit;
+      border-radius: 6px;
+    }
+    input {
+      border: 1px solid var(--line);
+      padding: 11px 12px;
+      outline: none;
+      background: #fff;
+    }
+    input:focus {
+      border-color: var(--brand);
+      box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.14);
+    }
+    button {
+      margin-top: 20px;
+      border: 0;
+      padding: 12px;
+      background: var(--brand);
+      color: #fff;
+      cursor: pointer;
+      font-weight: 700;
+    }
+    button:hover { background: var(--brand-dark); }
+    .error {
+      margin: 0 0 16px;
+      padding: 10px 12px;
+      border: 1px solid #f1b5ae;
+      border-radius: 6px;
+      color: var(--danger);
+      background: #fff4f2;
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+  <form class="login" method="post" action="/admin/login" autocomplete="on">
+    <h1>ARM WhatsApp Admin</h1>
+    <p class="hint">Войдите, чтобы управлять чатами и доступом к документам.</p>
+    ${error ? `<div class="error">${escapeHtml(error)}</div>` : ''}
+    <input type="hidden" name="next" value="${escapeHtml(next)}">
+    <label for="user">Логин</label>
+    <input id="user" name="user" autocomplete="username" required autofocus>
+    <label for="password">Пароль</label>
+    <input id="password" name="password" type="password" autocomplete="current-password" required>
+    <button type="submit">Войти</button>
+  </form>
+</body>
+</html>`;
+}
+
+function renderAdminPage({ user = 'admin' } = {}) {
+  const safeUser = escapeHtml(user);
   return `<!doctype html>
 <html lang="ru">
 <head>
@@ -191,7 +307,23 @@ function renderAdminPage() {
     .status {
       color: var(--muted);
       font-size: 12px;
-      padding: 0 20px;
+    }
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 0;
+    }
+    .admin-user {
+      max-width: 180px;
+      color: var(--muted);
+      font-size: 12px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .logout-form {
+      margin: 0;
     }
     @media (max-width: 980px) {
       main {
@@ -207,7 +339,13 @@ function renderAdminPage() {
 <body>
   <header>
     <h1>ARM WhatsApp Admin</h1>
-    <div class="status" id="status">Загрузка...</div>
+    <div class="header-actions">
+      <div class="admin-user">${safeUser}</div>
+      <div class="status" id="status">Загрузка...</div>
+      <form class="logout-form" method="post" action="/admin/logout">
+        <button class="secondary" type="submit">Выйти</button>
+      </form>
+    </div>
   </header>
   <main>
     <section>
@@ -261,6 +399,9 @@ function renderAdminPage() {
         ...options,
       });
       if (!res.ok) {
+        if (res.status === 401) {
+          window.location.href = '/admin/login';
+        }
         const data = await res.json().catch(() => ({}));
         throw new Error(data.error || res.statusText);
       }
@@ -426,4 +567,4 @@ function renderAdminPage() {
 </html>`;
 }
 
-module.exports = { renderAdminPage };
+module.exports = { renderAdminPage, renderLoginPage };
