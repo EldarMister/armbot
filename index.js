@@ -1,9 +1,11 @@
 require('dotenv').config();
+const crypto = require('crypto');
 const express = require('express');
 const { findKontejner, formatStatus, loadSheetFresh, WATCHABLE_FIELDS } = require('./sheets');
 const { getContainerFiles } = require('./drive');
 const wa = require('./whatsapp');
 const db = require('./db');
+const { renderAdminPage } = require('./adminPage');
 const { extractContainerNumber, getEnv, normalizeContainerKey } = require('./env');
 
 const app = express();
@@ -20,8 +22,8 @@ const ALLOWED = new Set(
     .filter(Boolean)
 );
 
-function isAllowed(phone) {
-  return ALLOWED.has(normalizeContainerKey(phone));
+async function isAllowed(phone) {
+  return ALLOWED.has(normalizeContainerKey(phone)) || await db.isDocAllowed(phone);
 }
 
 function compactCommand(text) {
@@ -51,6 +53,146 @@ function logWebhookMessage(msg, state) {
     interactiveTitle: reply.title || undefined,
   });
 }
+
+function getIncomingMessageBody(msg) {
+  if (msg.type === 'text') return msg.text?.body || '';
+  if (msg.type === 'interactive') {
+    const reply = getInteractiveReply(msg);
+    return reply.title || reply.id || '[interactive]';
+  }
+  if (msg.type === 'document') return msg.document?.filename || '[document]';
+  if (msg.type === 'image') return msg.image?.caption || '[image]';
+  return `[${msg.type}]`;
+}
+
+function getAdminPassword() {
+  return getEnv('WEB_ADMIN_PASSWORD') || getEnv('ADMIN_PASSWORD') || getEnv('WEBHOOK_VERIFY_TOKEN');
+}
+
+function timingSafeStringEqual(a, b) {
+  const left = Buffer.from(String(a || ''));
+  const right = Buffer.from(String(b || ''));
+  return left.length === right.length && crypto.timingSafeEqual(left, right);
+}
+
+function requireAdmin(req, res, next) {
+  const password = getAdminPassword();
+  if (!password) {
+    return res.status(503).send('Set WEB_ADMIN_PASSWORD to enable admin panel.');
+  }
+
+  const header = req.headers.authorization || '';
+  const [scheme, encoded] = header.split(' ');
+  if (scheme !== 'Basic' || !encoded) {
+    res.set('WWW-Authenticate', 'Basic realm="ARM WhatsApp Admin"');
+    return res.sendStatus(401);
+  }
+
+  const [user, pass] = Buffer.from(encoded, 'base64').toString('utf8').split(':');
+  const expectedUser = getEnv('WEB_ADMIN_USER') || getEnv('ADMIN_USER') || 'admin';
+  if (timingSafeStringEqual(user, expectedUser) && timingSafeStringEqual(pass, password)) {
+    return next();
+  }
+
+  res.set('WWW-Authenticate', 'Basic realm="ARM WhatsApp Admin"');
+  return res.sendStatus(401);
+}
+
+function accessFromEnv() {
+  return Array.from(ALLOWED).map(phone => ({
+    phone,
+    source: 'env',
+    created_at: null,
+  }));
+}
+
+app.use('/admin', requireAdmin);
+
+app.get('/admin', (req, res) => {
+  res.type('html').send(renderAdminPage());
+});
+
+app.get('/admin/api/chats', async (req, res) => {
+  try {
+    const chats = await db.listChats();
+    res.json({
+      chats: chats.map(chat => ({
+        ...chat,
+        docs_access: chat.docs_access || ALLOWED.has(normalizeContainerKey(chat.phone)),
+      })),
+    });
+  } catch (err) {
+    console.error('admin list chats error:', err.message);
+    res.status(500).json({ error: 'Failed to load chats' });
+  }
+});
+
+app.get('/admin/api/chats/:phone/messages', async (req, res) => {
+  try {
+    const messages = await db.listMessages(req.params.phone);
+    res.json({ messages });
+  } catch (err) {
+    console.error('admin list messages error:', err.message);
+    res.status(500).json({ error: 'Failed to load messages' });
+  }
+});
+
+app.post('/admin/api/chats/:phone/messages', async (req, res) => {
+  const phone = db.normalizePhone(req.params.phone);
+  const text = String(req.body?.text || '').trim();
+  if (!phone || !text) return res.status(400).json({ error: 'Phone and text are required' });
+
+  try {
+    const result = await wa.sendText(phone, text);
+    const messageId = result.data?.messages?.[0]?.id || null;
+    await db.savePhone(phone);
+    await db.saveMessage(phone, 'out', text, messageId);
+    res.json({ ok: true, message_id: messageId });
+  } catch (err) {
+    console.error('admin send message error:', err.response?.data || err.message);
+    res.status(500).json({ error: 'Failed to send WhatsApp message' });
+  }
+});
+
+app.get('/admin/api/access', async (req, res) => {
+  try {
+    const dbAccess = (await db.listDocAccess()).map(item => ({ ...item, source: 'db' }));
+    const seen = new Set(dbAccess.map(item => item.phone));
+    const envAccess = accessFromEnv().filter(item => !seen.has(item.phone));
+    res.json({ access: [...dbAccess, ...envAccess] });
+  } catch (err) {
+    console.error('admin list access error:', err.message);
+    res.status(500).json({ error: 'Failed to load access list' });
+  }
+});
+
+app.post('/admin/api/access', async (req, res) => {
+  const phone = db.normalizePhone(req.body?.phone);
+  if (!phone) return res.status(400).json({ error: 'Phone is required' });
+
+  try {
+    const item = await db.grantDocAccess(phone);
+    res.json({ ok: true, access: item });
+  } catch (err) {
+    console.error('admin grant access error:', err.message);
+    res.status(500).json({ error: 'Failed to grant access' });
+  }
+});
+
+app.delete('/admin/api/access/:phone', async (req, res) => {
+  const phone = db.normalizePhone(req.params.phone);
+  if (ALLOWED.has(normalizeContainerKey(phone))) {
+    return res.status(400).json({ error: 'This phone is configured in ALLOWED_PHONES env' });
+  }
+
+  try {
+    await db.revokeDocAccess(phone);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('admin revoke access error:', err.message);
+    res.status(500).json({ error: 'Failed to revoke access' });
+  }
+});
 
 // ─── Проверка обновлений (каждый час) ────────────────────────────────────────
 
@@ -162,10 +304,13 @@ app.post('/webhook', async (req, res) => {
 
     const from = msg.from;
     const state = userState.get(from) || 'idle';
+    const contact = (value?.contacts || []).find(item => item.wa_id === from) || value?.contacts?.[0];
+    const contactName = contact?.profile?.name || null;
     logWebhookMessage(msg, state);
 
     wa.markRead(msg.id).catch(() => {});
-    db.savePhone(from).catch(() => {});
+    db.savePhone(from, contactName).catch(() => {});
+    db.saveMessage(from, 'in', getIncomingMessageBody(msg), msg.id).catch(() => {});
 
     // ── Интерактивные кнопки ──────────────────────────────────────────────────
     if (msg.type === 'interactive') {
@@ -180,7 +325,7 @@ app.post('/webhook', async (req, res) => {
       }
 
       if (btnId === 'btn_docs' || btnCommand === 'документы') {
-        if (!isAllowed(from)) {
+        if (!(await isAllowed(from))) {
           await wa.sendText(from, '🚫 У вас нет доступа к этому разделу.');
           return;
         }
@@ -207,7 +352,7 @@ app.post('/webhook', async (req, res) => {
     if (/^(\/?start|привет|здравствуйте|меню|menu|hi|hello|салам|башта)$/i.test(tekst) ||
         ['start', 'привет', 'здравствуйте', 'меню', 'menu', 'hi', 'hello', 'салам', 'башта'].includes(command)) {
       userState.set(from, 'idle');
-      await wa.sendWelcome(from, isAllowed(from));
+      await wa.sendWelcome(from, await isAllowed(from));
       return;
     }
 
@@ -219,7 +364,7 @@ app.post('/webhook', async (req, res) => {
     }
 
     if (command === 'документы') {
-      if (!isAllowed(from)) {
+      if (!(await isAllowed(from))) {
         await wa.sendText(from, '🚫 У вас нет доступа к этому разделу.');
         return;
       }
@@ -269,7 +414,7 @@ app.post('/webhook', async (req, res) => {
       return;
     }
 
-    await wa.sendWelcome(from, isAllowed(from));
+    await wa.sendWelcome(from, await isAllowed(from));
 
   } catch (err) {
     console.error('webhook error:', err.message);
