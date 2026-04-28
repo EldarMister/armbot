@@ -9,6 +9,19 @@ const { renderAdminPage, renderLoginPage } = require('./adminPage');
 const { extractContainerNumber, getEnv, normalizeContainerKey } = require('./env');
 
 const app = express();
+app.use((req, res, next) => {
+  if (req.path === '/webhook' || req.path === '/health') {
+    console.log('http request', {
+      method: req.method,
+      path: req.path,
+      queryKeys: Object.keys(req.query || {}),
+      contentType: req.get('content-type') || null,
+      userAgent: req.get('user-agent') || null,
+      ip: req.get('x-forwarded-for') || req.ip,
+    });
+  }
+  next();
+});
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 
@@ -409,8 +422,15 @@ app.get('/webhook', (req, res) => {
   const mode = req.query['hub.mode'];
   const token = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
+  const tokenMatches = token === getEnv('WEBHOOK_VERIFY_TOKEN');
 
-  if (mode === 'subscribe' && token === getEnv('WEBHOOK_VERIFY_TOKEN')) {
+  console.log('webhook verify request', {
+    mode,
+    tokenMatches,
+    hasChallenge: Boolean(challenge),
+  });
+
+  if (mode === 'subscribe' && tokenMatches) {
     console.log('webhook verified');
     return res.status(200).send(challenge);
   }
