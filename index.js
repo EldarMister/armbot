@@ -24,6 +24,34 @@ function isAllowed(phone) {
   return ALLOWED.has(normalizeContainerKey(phone));
 }
 
+function compactCommand(text) {
+  return String(text || '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, '')
+    .trim();
+}
+
+function getInteractiveReply(msg) {
+  const button = msg.interactive?.button_reply;
+  const list = msg.interactive?.list_reply;
+  return {
+    id: button?.id || list?.id || '',
+    title: button?.title || list?.title || '',
+  };
+}
+
+function logWebhookMessage(msg, state) {
+  const reply = getInteractiveReply(msg);
+  console.log('webhook message', {
+    from: msg.from,
+    type: msg.type,
+    state,
+    text: msg.text?.body,
+    interactiveId: reply.id || undefined,
+    interactiveTitle: reply.title || undefined,
+  });
+}
+
 // ─── Проверка обновлений (каждый час) ────────────────────────────────────────
 
 async function checkForUpdates() {
@@ -121,25 +149,37 @@ app.post('/webhook', async (req, res) => {
   try {
     const value = req.body?.entry?.[0]?.changes?.[0]?.value;
     const msg = value?.messages?.[0];
-    if (!msg) return;
+    if (!msg) {
+      if (value?.statuses?.length) {
+        console.log('webhook status', value.statuses.map(s => ({
+          id: s.id,
+          status: s.status,
+          recipient_id: s.recipient_id,
+        })));
+      }
+      return;
+    }
 
     const from = msg.from;
     const state = userState.get(from) || 'idle';
+    logWebhookMessage(msg, state);
 
     wa.markRead(msg.id).catch(() => {});
     db.savePhone(from).catch(() => {});
 
     // ── Интерактивные кнопки ──────────────────────────────────────────────────
     if (msg.type === 'interactive') {
-      const btnId = msg.interactive?.button_reply?.id;
+      const reply = getInteractiveReply(msg);
+      const btnId = reply.id;
+      const btnCommand = compactCommand(reply.title);
 
-      if (btnId === 'btn_status') {
+      if (btnId === 'btn_status' || btnCommand === 'статус') {
         userState.set(from, 'wait_nomer');
         await wa.sendText(from, '📦 Введите номер контейнера:');
         return;
       }
 
-      if (btnId === 'btn_docs') {
+      if (btnId === 'btn_docs' || btnCommand === 'документы') {
         if (!isAllowed(from)) {
           await wa.sendText(from, '🚫 У вас нет доступа к этому разделу.');
           return;
@@ -149,29 +189,47 @@ app.post('/webhook', async (req, res) => {
         return;
       }
 
+      console.warn('webhook unknown interactive', {
+        from,
+        interactiveType: msg.interactive?.type,
+        btnId,
+        btnTitle: reply.title,
+      });
       return;
     }
 
     if (msg.type !== 'text') return;
 
     const tekst = (msg.text?.body || '').trim();
+    const command = compactCommand(tekst);
 
     // ── Приветствие / меню ────────────────────────────────────────────────────
-    if (/^(\/?start|привет|здравствуйте|меню|menu|hi|hello|салам|башта)$/i.test(tekst)) {
+    if (/^(\/?start|привет|здравствуйте|меню|menu|hi|hello|салам|башта)$/i.test(tekst) ||
+        ['start', 'привет', 'здравствуйте', 'меню', 'menu', 'hi', 'hello', 'салам', 'башта'].includes(command)) {
       userState.set(from, 'idle');
       await wa.sendWelcome(from, isAllowed(from));
       return;
     }
 
     // ── Текстовый запрос статуса ──────────────────────────────────────────────
-    if (/^статус$/i.test(tekst)) {
+    if (/^статус$/i.test(tekst) || command === 'статус') {
       userState.set(from, 'wait_nomer');
       await wa.sendText(from, '📦 Введите номер контейнера:');
       return;
     }
 
+    if (command === 'документы') {
+      if (!isAllowed(from)) {
+        await wa.sendText(from, '🚫 У вас нет доступа к этому разделу.');
+        return;
+      }
+      userState.set(from, 'wait_docs_nomer');
+      await wa.sendText(from, '📄 Введите номер контейнера для получения документов:');
+      return;
+    }
+
     // ── Отписка ───────────────────────────────────────────────────────────────
-    if (/^отписаться$/i.test(tekst)) {
+    if (/^отписаться$/i.test(tekst) || command === 'отписаться') {
       const count = await db.otpisat(from);
       await wa.sendText(
         from,
