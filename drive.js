@@ -46,9 +46,21 @@ async function listChildren(drive, folderId) {
 
 async function findContainerFolder(drive, parentId, containerInput) {
   const folders = await listChildren(drive, parentId);
-  return folders.find(
+  const folder = folders.find(
     item => item.mimeType === FOLDER_MIME && containerInputMatchesFolder(containerInput, item.name)
   ) || null;
+
+  if (!folder) {
+    console.warn('drive: container folder not found', {
+      parentId,
+      input: containerInput,
+      visibleFolders: folders
+        .filter(item => item.mimeType === FOLDER_MIME)
+        .map(item => item.name),
+    });
+  }
+
+  return folder;
 }
 
 async function flattenFiles(drive, folderId, prefix = '') {
