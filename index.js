@@ -289,6 +289,15 @@ app.post('/webhook', async (req, res) => {
   res.sendStatus(200);
 
   try {
+    console.log('webhook post received', {
+      object: req.body?.object,
+      entryCount: Array.isArray(req.body?.entry) ? req.body.entry.length : 0,
+      field: req.body?.entry?.[0]?.changes?.[0]?.field,
+      hasMessages: !!req.body?.entry?.[0]?.changes?.[0]?.value?.messages?.length,
+      hasStatuses: !!req.body?.entry?.[0]?.changes?.[0]?.value?.statuses?.length,
+      userAgent: req.get('user-agent'),
+    });
+
     const value = req.body?.entry?.[0]?.changes?.[0]?.value;
     const msg = value?.messages?.[0];
     if (!msg) {
@@ -419,6 +428,15 @@ app.post('/webhook', async (req, res) => {
   } catch (err) {
     console.error('webhook error:', err.message);
   }
+});
+
+app.get('/health', (req, res) => {
+  res.json({
+    ok: true,
+    service: 'armbot',
+    time: new Date().toISOString(),
+    commit: process.env.RAILWAY_GIT_COMMIT_SHA || null,
+  });
 });
 
 app.get('/', (req, res) => res.send('ARM SHORING Bot ✅'));
