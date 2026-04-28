@@ -137,6 +137,7 @@ function renderAdminPage({ user = 'admin' } = {}) {
     body {
       margin: 0;
       font-family: Arial, sans-serif;
+      font-size: 14px;
       background: var(--bg);
       color: var(--text);
     }
@@ -190,7 +191,7 @@ function renderAdminPage({ user = 'admin' } = {}) {
       width: 100%;
       border: 1px solid var(--line);
       border-radius: 6px;
-      padding: 10px;
+      padding: 8px 10px;
       outline: none;
       background: #fff;
     }
@@ -200,7 +201,7 @@ function renderAdminPage({ user = 'admin' } = {}) {
     button {
       border: 0;
       border-radius: 6px;
-      padding: 10px 12px;
+      padding: 8px 10px;
       background: var(--brand);
       color: #fff;
       cursor: pointer;
@@ -220,7 +221,7 @@ function renderAdminPage({ user = 'admin' } = {}) {
       min-height: 0;
     }
     .chat-row, .access-row {
-      padding: 12px 14px;
+      padding: 9px 12px;
       border-bottom: 1px solid var(--line);
       cursor: pointer;
     }
@@ -253,39 +254,52 @@ function renderAdminPage({ user = 'admin' } = {}) {
     .messages {
       flex: 1;
       overflow: auto;
-      padding: 16px;
+      padding: 12px 14px;
       background: #fafbfc;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 8px;
     }
     .empty {
       color: var(--muted);
       padding: 16px;
     }
     .msg {
-      max-width: 72%;
-      margin: 0 0 10px;
-      padding: 10px 12px;
-      border-radius: 8px;
+      width: fit-content;
+      max-width: min(560px, 76%);
+      margin: 0;
+      padding: 7px 9px;
+      border-radius: 7px;
       border: 1px solid var(--line);
       background: #fff;
+      font-size: 14px;
+      line-height: 1.35;
       white-space: pre-wrap;
       overflow-wrap: anywhere;
     }
     .msg.out {
-      margin-left: auto;
+      align-self: flex-end;
       background: #e8f5f3;
       border-color: #c8e7e3;
     }
     .msg-time {
-      margin-top: 6px;
+      margin-top: 4px;
       color: var(--muted);
       font-size: 11px;
+      line-height: 1.2;
     }
     .composer {
       border-top: 1px solid var(--line);
-      padding: 12px;
+      padding: 10px;
       display: grid;
       grid-template-columns: 1fr auto;
       gap: 8px;
+    }
+    .composer textarea {
+      min-height: 54px;
+      max-height: 120px;
+      resize: vertical;
     }
     .side-form {
       padding: 14px;
