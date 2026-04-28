@@ -540,6 +540,12 @@ app.post('/webhook', async (req, res) => {
       const btnId = reply.id;
       const btnCommand = compactCommand(reply.title);
 
+      if (btnId === 'btn_home' || btnCommand === 'наглавную') {
+        userState.set(from, 'idle');
+        await wa.sendWelcome(from, await isAllowed(from));
+        return;
+      }
+
       if (btnId === 'btn_status' || btnCommand === 'статус') {
         userState.set(from, 'wait_nomer');
         await wa.sendText(from, '📦 Введите номер контейнера:');
@@ -621,13 +627,13 @@ app.post('/webhook', async (req, res) => {
       try {
         const row = await findKontejner(tekst);
         if (!row) {
-          await wa.sendText(from,
+          await wa.sendTextWithHome(from,
             'Здравствуйте! 😊\n\n📦 Трекинг контейнера появляется через 5 дней после погрузки.\n\n🔎 Пожалуйста, проверьте правильность номера контейнера.'
           );
           return;
         }
         const sub = await db.getSubscription(tekst);
-        await wa.sendText(from, formatStatus(row, sub?.last_updated_at));
+        await wa.sendTextWithHome(from, formatStatus(row, sub?.last_updated_at));
         await db.podpisat(from, extractContainerNumber(tekst) || tekst, row);
       } catch (err) {
         console.error('sheet error:', err.message);

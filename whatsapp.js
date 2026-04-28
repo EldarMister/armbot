@@ -28,6 +28,23 @@ async function sendText(to, text) {
   });
 }
 
+async function sendTextWithHome(to, text) {
+  return post({
+    messaging_product: 'whatsapp',
+    to,
+    type: 'interactive',
+    interactive: {
+      type: 'button',
+      body: { text },
+      action: {
+        buttons: [
+          { type: 'reply', reply: { id: 'btn_home', title: '🏠 На главную' } },
+        ],
+      },
+    },
+  });
+}
+
 /**
  * @param {string} to  - номер телефона
  * @param {boolean} withDocs - показывать ли кнопку «Документы» (только для авторизованных)
@@ -86,4 +103,4 @@ async function markRead(messageId) {
   } catch (_) {}
 }
 
-module.exports = { sendText, sendWelcome, sendDocument, markRead };
+module.exports = { sendText, sendTextWithHome, sendWelcome, sendDocument, markRead };
