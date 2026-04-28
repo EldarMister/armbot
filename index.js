@@ -1,10 +1,9 @@
 require('dotenv').config();
 const express = require('express');
-const fs = require('fs');
-const path = require('path');
 const { findKontejner, formatStatus, loadSheetFresh, WATCHABLE_FIELDS } = require('./sheets');
 const { getContainerFiles } = require('./drive');
 const wa = require('./whatsapp');
+const db = require('./db');
 
 const app = express();
 app.use(express.json());
@@ -12,7 +11,7 @@ app.use(express.json());
 const userState = new Map();
 
 // ─── Авторизация для раздела «Документы» ────────────────────────────────────
-// В .env: ALLOWED_PHONES=79001234567,996700123456  (через запятую, без пробелов)
+
 const ALLOWED = new Set(
   (process.env.ALLOWED_PHONES || '')
     .split(',')
@@ -24,105 +23,37 @@ function isAllowed(phone) {
   return ALLOWED.has(phone);
 }
 
-// ─── Подписки ────────────────────────────────────────────────────────────────
-
-const subscriptions = new Map();
-const userSubscriptions = new Map();
-
-const SUBS_FILE = path.join(__dirname, 'subscriptions.json');
-
-function saveSubs() {
-  const data = {};
-  for (const [key, sub] of subscriptions.entries()) {
-    data[key] = { users: [...sub.users], snapshot: sub.snapshot };
-  }
-  try {
-    fs.writeFileSync(SUBS_FILE, JSON.stringify(data, null, 2), 'utf8');
-  } catch (err) {
-    console.error('saveSubs error:', err.message);
-  }
-}
-
-function loadSubs() {
-  try {
-    if (!fs.existsSync(SUBS_FILE)) return;
-    const data = JSON.parse(fs.readFileSync(SUBS_FILE, 'utf8'));
-    for (const [key, val] of Object.entries(data)) {
-      subscriptions.set(key, {
-        users: new Set(val.users),
-        snapshot: val.snapshot,
-      });
-      for (const phone of val.users) {
-        if (!userSubscriptions.has(phone)) userSubscriptions.set(phone, new Set());
-        userSubscriptions.get(phone).add(key);
-      }
-    }
-    console.log(`loaded ${subscriptions.size} subscription(s) from disk`);
-  } catch (err) {
-    console.error('loadSubs error:', err.message);
-  }
-}
-
-loadSubs();
-
-function subscribe(phone, nomer, row) {
-  const key = nomer.toUpperCase();
-  if (!subscriptions.has(key)) {
-    subscriptions.set(key, { users: new Set(), snapshot: [...row] });
-  } else {
-    subscriptions.get(key).snapshot = [...row];
-  }
-  subscriptions.get(key).users.add(phone);
-  if (!userSubscriptions.has(phone)) userSubscriptions.set(phone, new Set());
-  userSubscriptions.get(phone).add(key);
-  saveSubs();
-}
-
-function unsubscribeAll(phone) {
-  const containers = userSubscriptions.get(phone);
-  if (!containers || containers.size === 0) return 0;
-  const count = containers.size;
-  for (const key of containers) {
-    const sub = subscriptions.get(key);
-    if (sub) {
-      sub.users.delete(phone);
-      if (sub.users.size === 0) subscriptions.delete(key);
-    }
-  }
-  userSubscriptions.delete(phone);
-  saveSubs();
-  return count;
-}
-
 // ─── Проверка обновлений (каждый час) ────────────────────────────────────────
 
 async function checkForUpdates() {
-  if (subscriptions.size === 0) return;
-  console.log(`checkForUpdates: checking ${subscriptions.size} container(s)...`);
   try {
+    const subs = await db.getVseSubscriptions();
+    if (subs.length === 0) return;
+    console.log(`checkForUpdates: checking ${subs.length} container(s)...`);
     const rows = await loadSheetFresh();
-    for (const [key, sub] of subscriptions.entries()) {
+    for (const sub of subs) {
+      const key = sub.container;
       const newRow = rows.find(r => String(r[0]).toUpperCase().trim() === key);
       if (!newRow) continue;
 
+      const oldSnap = Array.isArray(sub.snapshot) ? sub.snapshot : [];
       const changes = [];
       for (const { idx, label } of WATCHABLE_FIELDS) {
-        const oldVal = sub.snapshot[idx] != null ? String(sub.snapshot[idx]).trim() : '';
+        const oldVal = oldSnap[idx] != null ? String(oldSnap[idx]).trim() : '';
         const newVal = newRow[idx] != null ? String(newRow[idx]).trim() : '';
         if (oldVal !== newVal) changes.push(`${label}: ${oldVal || '—'} → ${newVal || '—'}`);
       }
-
       if (changes.length === 0) continue;
 
-      sub.snapshot = [...newRow];
-      saveSubs();
+      const lastUpdatedAt = new Date().toISOString();
+      await db.obnovitSnapshot(key, newRow, lastUpdatedAt);
 
       const notification =
         `🔔 Обновление по контейнеру *${key}*\n\n` +
         `Изменения:\n${changes.join('\n')}\n\n` +
-        `Актуальный статус:\n${formatStatus(newRow)}`;
+        `Актуальный статус:\n${formatStatus(newRow, lastUpdatedAt)}`;
 
-      for (const phone of sub.users) {
+      for (const phone of sub.phones) {
         await wa.sendText(phone, notification).catch(err =>
           console.error(`notify ${phone}:`, err.message)
         );
@@ -159,9 +90,7 @@ async function sendDocs(phone, containerNomer) {
     await wa.sendText(phone, `📄 Документы по контейнеру *${key}* — ${files.length} файл(ов):`);
 
     for (const file of files) {
-      // Пробуем отправить как документ WhatsApp
       await wa.sendDocument(phone, file.url, file.name).catch(async () => {
-        // Если не получилось — шлём ссылку текстом
         await wa.sendText(phone, `📋 *${file.name}*\n🔗 ${file.viewUrl}`);
       });
     }
@@ -197,6 +126,7 @@ app.post('/webhook', async (req, res) => {
     const state = userState.get(from) || 'idle';
 
     wa.markRead(msg.id).catch(() => {});
+    db.savePhone(from).catch(() => {});
 
     // ── Интерактивные кнопки ──────────────────────────────────────────────────
     if (msg.type === 'interactive') {
@@ -241,7 +171,7 @@ app.post('/webhook', async (req, res) => {
 
     // ── Отписка ───────────────────────────────────────────────────────────────
     if (/^отписаться$/i.test(tekst)) {
-      const count = unsubscribeAll(from);
+      const count = await db.otpisat(from);
       await wa.sendText(
         from,
         count > 0
@@ -265,15 +195,14 @@ app.post('/webhook', async (req, res) => {
       try {
         const row = await findKontejner(tekst);
         if (!row) {
-          await wa.sendText(
-            from,
-            `❌ Контейнер *${tekst.toUpperCase()}* не найден.\n\nПроверьте номер и попробуйте ещё раз.`
+          await wa.sendText(from,
+            'Здравствуйте! 😊\n\n📦 Трекинг контейнера появляется через 5 дней после погрузки.\n\n🔎 Пожалуйста, проверьте правильность номера контейнера.'
           );
           return;
         }
-        await wa.sendText(from, formatStatus(row));
-        subscribe(from, tekst, row);
-        await wa.sendText(from, `🔔 Вы подписались на обновления контейнера *${tekst.toUpperCase()}*`);
+        const sub = await db.getSubscription(tekst.toUpperCase());
+        await wa.sendText(from, formatStatus(row, sub?.last_updated_at));
+        await db.podpisat(from, tekst, row);
       } catch (err) {
         console.error('sheet error:', err.message);
         await wa.sendText(from, '⚠️ Не удалось получить данные. Попробуйте позже.');
@@ -291,4 +220,10 @@ app.post('/webhook', async (req, res) => {
 app.get('/', (req, res) => res.send('ARM SHORING Bot ✅'));
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`сервер на порту ${PORT}`));
+
+db.initDB().then(() => {
+  app.listen(PORT, () => console.log(`сервер на порту ${PORT}`));
+}).catch(err => {
+  console.error('DB init error:', err.message);
+  process.exit(1);
+});
