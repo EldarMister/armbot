@@ -313,12 +313,31 @@ function renderAdminPage({ user = 'admin' } = {}) {
       gap: 8px;
       border-bottom: 1px solid var(--line);
     }
+    .section-subhead {
+      padding: 12px 14px;
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
     .access-row {
       display: grid;
       grid-template-columns: 1fr auto;
       gap: 8px;
       align-items: center;
       cursor: default;
+    }
+    .subscription-row {
+      padding: 9px 12px;
+      border-bottom: 1px solid var(--line);
+    }
+    .subscription-phones {
+      color: var(--muted);
+      font-size: 12px;
+      margin-top: 4px;
+      overflow-wrap: anywhere;
     }
     .source {
       color: var(--muted);
@@ -405,12 +424,18 @@ function renderAdminPage({ user = 'admin' } = {}) {
         <button onclick="grantAccessFromInput()">Добавить доступ</button>
       </div>
       <div class="list" id="access"></div>
+      <div class="section-subhead">
+        <div class="section-title">Подписки</div>
+        <button class="secondary" onclick="runSubscriptionCheck()">Проверить</button>
+      </div>
+      <div class="list" id="subscriptions"></div>
     </section>
   </main>
 
   <script>
     let chats = [];
     let access = [];
+    let subscriptions = [];
     let selectedPhone = null;
 
     const api = async (url, options = {}) => {
@@ -459,14 +484,17 @@ function renderAdminPage({ user = 'admin' } = {}) {
     async function loadAll() {
       try {
         setStatus('Загрузка...');
-        const [chatData, accessData] = await Promise.all([
+        const [chatData, accessData, subscriptionData] = await Promise.all([
           api('/admin/api/chats'),
           api('/admin/api/access'),
+          api('/admin/api/subscriptions'),
         ]);
         chats = chatData.chats || [];
         access = accessData.access || [];
+        subscriptions = subscriptionData.subscriptions || [];
         renderChats();
         renderAccess();
+        renderSubscriptions();
         setStatus('Готово');
       } catch (err) {
         setStatus(err.message);
@@ -504,6 +532,17 @@ function renderAdminPage({ user = 'admin' } = {}) {
             : '<button class="danger" onclick="revokeAccess(\\'\${item.phone}\\')">Убрать</button>'}
         </div>
       \`).join('') : '<div class="empty">Список пуст.</div>';
+    }
+
+    function renderSubscriptions() {
+      const root = document.getElementById('subscriptions');
+      root.innerHTML = subscriptions.length ? subscriptions.map(item => \`
+        <div class="subscription-row">
+          <div class="phone">\${esc(item.container)}</div>
+          <div class="subscription-phones">\${esc((item.phones || []).join(', '))}</div>
+          <div class="meta">\${esc(item.phone_count || 0)} номер(ов) · обновлено \${esc(fmtDate(item.last_updated_at) || '—')}</div>
+        </div>
+      \`).join('') : '<div class="empty">Нет подписок WhatsApp.</div>';
     }
 
     async function selectChat(phone) {
@@ -579,6 +618,19 @@ function renderAdminPage({ user = 'admin' } = {}) {
     async function revokeAccess(phone) {
       await api('/admin/api/access/' + encodeURIComponent(phone), { method: 'DELETE' });
       await loadAll();
+    }
+
+    async function runSubscriptionCheck() {
+      try {
+        setStatus('Проверка подписок...');
+        const data = await api('/admin/api/subscriptions/check', { method: 'POST' });
+        const summary = data.summary || {};
+        await loadAll();
+        if (selectedPhone) await selectChat(selectedPhone);
+        setStatus(\`Проверено: \${summary.subscriptions || 0}, изменений: \${summary.changed || 0}, отправлено: \${summary.sent || 0}, ошибок: \${summary.failed || 0}\`);
+      } catch (err) {
+        setStatus(err.message);
+      }
     }
 
     loadAll();

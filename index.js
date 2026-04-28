@@ -339,18 +339,50 @@ app.delete('/admin/api/access/:phone', async (req, res) => {
   }
 });
 
-// ─── Проверка обновлений (каждый час) ────────────────────────────────────────
+app.get('/admin/api/subscriptions', async (req, res) => {
+  try {
+    const subscriptions = await db.listSubscriptions();
+    res.json({ subscriptions });
+  } catch (err) {
+    console.error('admin list subscriptions error:', err.message);
+    res.status(500).json({ error: 'Failed to load subscriptions' });
+  }
+});
+
+app.post('/admin/api/subscriptions/check', async (req, res) => {
+  try {
+    const summary = await checkForUpdates();
+    res.json({ ok: true, summary });
+  } catch (err) {
+    console.error('admin check subscriptions error:', err.message);
+    res.status(500).json({ error: 'Failed to run subscription check' });
+  }
+});
+
+// ─── Проверка обновлений (каждые 5 минут) ────────────────────────────────────
 
 async function checkForUpdates() {
+  const summary = {
+    subscriptions: 0,
+    changed: 0,
+    sent: 0,
+    failed: 0,
+    missing: 0,
+  };
+
   try {
     const subs = await db.getVseSubscriptions();
-    if (subs.length === 0) return;
+    summary.subscriptions = subs.length;
+    if (subs.length === 0) return summary;
     console.log(`checkForUpdates: checking ${subs.length} container(s)...`);
     const rows = await loadSheetFresh();
     for (const sub of subs) {
       const key = extractContainerNumber(sub.container) || normalizeContainerKey(sub.container);
       const newRow = rows.find(r => extractContainerNumber(r[0]) === key);
-      if (!newRow) continue;
+      if (!newRow) {
+        summary.missing += 1;
+        continue;
+      }
 
       const oldSnap = Array.isArray(sub.snapshot) ? sub.snapshot : [];
       const changes = [];
@@ -360,6 +392,7 @@ async function checkForUpdates() {
         if (oldVal !== newVal) changes.push(`${label}: ${oldVal || '—'} → ${newVal || '—'}`);
       }
       if (changes.length === 0) continue;
+      summary.changed += 1;
 
       const lastUpdatedAt = new Date().toISOString();
 
@@ -377,9 +410,13 @@ async function checkForUpdates() {
 
       for (const phone of sub.phones) {
         try {
-          await wa.sendText(phone, notification);
+          const result = await wa.sendText(phone, notification);
+          const messageId = result.data?.messages?.[0]?.id || null;
+          await db.saveMessage(phone, 'out', notification, messageId);
           sentCount += 1;
+          summary.sent += 1;
         } catch (err) {
+          summary.failed += 1;
           console.error('notify failed', {
             phone,
             container: key,
@@ -399,7 +436,9 @@ async function checkForUpdates() {
     }
   } catch (err) {
     console.error('checkForUpdates error:', err.message);
+    summary.error = err.message;
   }
+  return summary;
 }
 
 setInterval(checkForUpdates, 5 * 60 * 1000);

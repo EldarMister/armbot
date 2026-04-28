@@ -111,6 +111,19 @@ async function getVseSubscriptions() {
   return res.rows;
 }
 
+async function listSubscriptions() {
+  const res = await pool.query(`
+    SELECT
+      container,
+      phones,
+      cardinality(phones) AS phone_count,
+      last_updated_at
+    FROM wa_subscriptions
+    ORDER BY container
+  `);
+  return res.rows;
+}
+
 async function obnovitSnapshot(container, snapshot, lastUpdatedAt) {
   const key = dbContainerKey(container);
   const legacyKey = legacyContainerKey(container);
@@ -200,6 +213,7 @@ module.exports = {
   podpisat,
   otpisat,
   getVseSubscriptions,
+  listSubscriptions,
   obnovitSnapshot,
   getSubscription,
   grantDocAccess,
