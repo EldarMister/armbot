@@ -380,7 +380,7 @@ async function checkForUpdates() {
   }
 }
 
-setInterval(checkForUpdates, 60 * 60 * 1000);
+setInterval(checkForUpdates, 5 * 60 * 1000);
 
 // ─── Отправка документов ─────────────────────────────────────────────────────
 

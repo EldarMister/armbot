@@ -27,7 +27,7 @@ const WATCHABLE_FIELDS = [
   { idx: COL.kitaj,       label: '🇨🇳 Прибыл в Китай' },
   { idx: COL.jdStart,     label: '🚆 Старт ЖД' },
   { idx: COL.location,    label: '📍 Местоположение' },
-  { idx: COL.rasstoyanie, label: '📏 Расстояние' },
+  { idx: COL.rasstoyanie, label: '📏 Расстояние до Кашкара' },
   { idx: COL.peregruzka,  label: '🚉 Станция перегрузки' },
   { idx: COL.mashina,     label: '🚛 Машина' },
   { idx: COL.granica,     label: '🛂 Граница' },
@@ -100,7 +100,7 @@ function formatStatus(row) {
 🇨🇳 Прибыл в Китай: ${f(COL.kitaj)}
 🚆 Старт ЖД: ${f(COL.jdStart)}
 📍 Местоположение: ${f(COL.location)}
-📏 Расстояние: ${f(COL.rasstoyanie)}
+📏 Расстояние до Кашкара: ${f(COL.rasstoyanie)}
 🚉 Станция перегрузки: ${f(COL.peregruzka)}
 🚛 Машина: ${f(COL.mashina)}
 📱 Тел. водителя: ${f(COL.phone)}
