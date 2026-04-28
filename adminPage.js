@@ -268,6 +268,8 @@ function renderAdminPage({ user = 'admin' } = {}) {
     .msg {
       width: fit-content;
       max-width: min(560px, 76%);
+      min-height: 0;
+      height: auto;
       margin: 0;
       padding: 7px 9px;
       border-radius: 7px;
@@ -275,19 +277,23 @@ function renderAdminPage({ user = 'admin' } = {}) {
       background: #fff;
       font-size: 14px;
       line-height: 1.35;
-      white-space: pre-wrap;
-      overflow-wrap: anywhere;
+      white-space: normal;
     }
     .msg.out {
       align-self: flex-end;
       background: #e8f5f3;
       border-color: #c8e7e3;
     }
+    .msg-body {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
     .msg-time {
       margin-top: 4px;
       color: var(--muted);
       font-size: 11px;
       line-height: 1.2;
+      white-space: nowrap;
     }
     .composer {
       border-top: 1px solid var(--line);
@@ -521,7 +527,7 @@ function renderAdminPage({ user = 'admin' } = {}) {
       const root = document.getElementById('messages');
       root.innerHTML = messages.length ? messages.map(msg => \`
         <div class="msg \${msg.direction === 'out' ? 'out' : 'in'}">
-          <div>\${esc(msg.body || '')}</div>
+          <div class="msg-body">\${esc(String(msg.body || '').trim())}</div>
           <div class="msg-time">\${msg.direction === 'out' ? 'Вы' : esc(msg.phone)} · \${esc(fmtDate(msg.created_at))}</div>
         </div>
       \`).join('') : '<div class="empty">История пуста.</div>';
