@@ -1,9 +1,18 @@
 const { Pool } = require('pg');
+const { extractContainerNumber, getEnv, normalizeContainerKey } = require('./env');
 
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
+  connectionString: getEnv('DATABASE_URL'),
   ssl: { rejectUnauthorized: false },
 });
+
+function dbContainerKey(container) {
+  return extractContainerNumber(container) || normalizeContainerKey(container);
+}
+
+function legacyContainerKey(container) {
+  return String(container ?? '').toUpperCase().trim();
+}
 
 async function initDB() {
   await pool.query(`
@@ -29,7 +38,7 @@ async function savePhone(phone) {
 }
 
 async function podpisat(phone, container, snapshot) {
-  const key = container.toUpperCase();
+  const key = dbContainerKey(container);
   await pool.query(`
     INSERT INTO wa_subscriptions (container, phones, snapshot)
     VALUES ($1, ARRAY[$2::text], $3::jsonb)
@@ -56,15 +65,21 @@ async function getVseSubscriptions() {
 }
 
 async function obnovitSnapshot(container, snapshot, lastUpdatedAt) {
+  const key = dbContainerKey(container);
+  const legacyKey = legacyContainerKey(container);
   await pool.query(`
-    UPDATE wa_subscriptions SET snapshot = $2::jsonb, last_updated_at = $3 WHERE container = $1
-  `, [container.toUpperCase(), JSON.stringify(snapshot), lastUpdatedAt]);
+    UPDATE wa_subscriptions
+    SET snapshot = $2::jsonb, last_updated_at = $3
+    WHERE container = $1 OR container = $4
+  `, [key, JSON.stringify(snapshot), lastUpdatedAt, legacyKey]);
 }
 
 async function getSubscription(container) {
+  const key = dbContainerKey(container);
+  const legacyKey = legacyContainerKey(container);
   const res = await pool.query(
-    'SELECT * FROM wa_subscriptions WHERE container = $1',
-    [container.toUpperCase()]
+    'SELECT * FROM wa_subscriptions WHERE container = $1 OR container = $2 LIMIT 1',
+    [key, legacyKey]
   );
   return res.rows[0] || null;
 }

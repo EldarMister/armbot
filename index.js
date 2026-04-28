@@ -4,6 +4,7 @@ const { findKontejner, formatStatus, loadSheetFresh, WATCHABLE_FIELDS } = requir
 const { getContainerFiles } = require('./drive');
 const wa = require('./whatsapp');
 const db = require('./db');
+const { extractContainerNumber, getEnv, normalizeContainerKey } = require('./env');
 
 const app = express();
 app.use(express.json());
@@ -13,14 +14,14 @@ const userState = new Map();
 // ─── Авторизация для раздела «Документы» ────────────────────────────────────
 
 const ALLOWED = new Set(
-  (process.env.ALLOWED_PHONES || '')
+  getEnv('ALLOWED_PHONES')
     .split(',')
-    .map(p => p.trim())
+    .map(normalizeContainerKey)
     .filter(Boolean)
 );
 
 function isAllowed(phone) {
-  return ALLOWED.has(phone);
+  return ALLOWED.has(normalizeContainerKey(phone));
 }
 
 // ─── Проверка обновлений (каждый час) ────────────────────────────────────────
@@ -32,8 +33,8 @@ async function checkForUpdates() {
     console.log(`checkForUpdates: checking ${subs.length} container(s)...`);
     const rows = await loadSheetFresh();
     for (const sub of subs) {
-      const key = sub.container;
-      const newRow = rows.find(r => String(r[0]).toUpperCase().trim() === key);
+      const key = extractContainerNumber(sub.container) || normalizeContainerKey(sub.container);
+      const newRow = rows.find(r => extractContainerNumber(r[0]) === key);
       if (!newRow) continue;
 
       const oldSnap = Array.isArray(sub.snapshot) ? sub.snapshot : [];
@@ -46,7 +47,7 @@ async function checkForUpdates() {
       if (changes.length === 0) continue;
 
       const lastUpdatedAt = new Date().toISOString();
-      await db.obnovitSnapshot(key, newRow, lastUpdatedAt);
+      await db.obnovitSnapshot(sub.container, newRow, lastUpdatedAt);
 
       const notification =
         `🔔 Обновление по контейнеру *${key}*\n\n` +
@@ -69,9 +70,9 @@ setInterval(checkForUpdates, 60 * 60 * 1000);
 // ─── Отправка документов ─────────────────────────────────────────────────────
 
 async function sendDocs(phone, containerNomer) {
-  const key = containerNomer.toUpperCase();
+  const key = extractContainerNumber(containerNomer) || containerNomer.trim();
   try {
-    const files = await getContainerFiles(key);
+    const files = await getContainerFiles(containerNomer);
 
     if (files === null) {
       await wa.sendText(phone,
@@ -91,7 +92,7 @@ async function sendDocs(phone, containerNomer) {
 
     for (const file of files) {
       await wa.sendDocument(phone, file.url, file.name).catch(async () => {
-        await wa.sendText(phone, `📋 *${file.name}*\n🔗 ${file.viewUrl}`);
+        await wa.sendText(phone, `📋 *${file.path || file.name}*\n🔗 ${file.viewUrl}`);
       });
     }
   } catch (err) {
@@ -107,7 +108,7 @@ app.get('/webhook', (req, res) => {
   const token = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
 
-  if (mode === 'subscribe' && token === process.env.WEBHOOK_VERIFY_TOKEN) {
+  if (mode === 'subscribe' && token === getEnv('WEBHOOK_VERIFY_TOKEN')) {
     console.log('webhook verified');
     return res.status(200).send(challenge);
   }
@@ -189,7 +190,7 @@ app.post('/webhook', async (req, res) => {
     }
 
     // ── Ожидаем номер для статуса (или авто-распознавание) ───────────────────
-    const looksLikeKontejner = /^[A-Za-z]{4}\d{6,8}$/.test(tekst);
+    const looksLikeKontejner = !!extractContainerNumber(tekst);
     if (state === 'wait_nomer' || looksLikeKontejner) {
       userState.set(from, 'idle');
       try {
@@ -200,9 +201,9 @@ app.post('/webhook', async (req, res) => {
           );
           return;
         }
-        const sub = await db.getSubscription(tekst.toUpperCase());
+        const sub = await db.getSubscription(tekst);
         await wa.sendText(from, formatStatus(row, sub?.last_updated_at));
-        await db.podpisat(from, tekst, row);
+        await db.podpisat(from, extractContainerNumber(tekst) || tekst, row);
       } catch (err) {
         console.error('sheet error:', err.message);
         await wa.sendText(from, '⚠️ Не удалось получить данные. Попробуйте позже.');

@@ -1,5 +1,6 @@
 const axios = require('axios');
 const { parse } = require('csv-parse/sync');
+const { extractContainerNumber, getEnv, normalizeContainerKey } = require('./env');
 
 const CACHE_TTL = 60 * 1000;
 let cache = { data: null, ts: 0 };
@@ -38,7 +39,7 @@ async function loadSheet() {
   const now = Date.now();
   if (cache.data && now - cache.ts < CACHE_TTL) return cache.data;
 
-  const res = await axios.get(process.env.SHEET_CSV_URL, { timeout: 15000 });
+  const res = await axios.get(getEnv('SHEET_CSV_URL'), { timeout: 15000 });
 
   const allRows = parse(res.data, {
     columns: false,
@@ -79,8 +80,14 @@ function computeStatus(row) {
 
 async function findKontejner(nomer) {
   const rows = await loadSheet();
-  const target = nomer.toUpperCase().trim();
-  return rows.find(r => String(r[COL.kontejner]).toUpperCase().trim() === target) || null;
+  const targetContainer = extractContainerNumber(nomer);
+  const targetFull = normalizeContainerKey(nomer);
+  return rows.find(r => {
+    const rowContainer = extractContainerNumber(r[COL.kontejner]);
+    return targetContainer
+      ? rowContainer === targetContainer
+      : normalizeContainerKey(r[COL.kontejner]) === targetFull;
+  }) || null;
 }
 
 function formatStatus(row) {

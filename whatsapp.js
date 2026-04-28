@@ -1,13 +1,14 @@
 const axios = require('axios');
+const { getEnv } = require('./env');
 
 const API = 'https://graph.facebook.com/v20.0';
 
 const headers = () => ({
-  Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
+  Authorization: `Bearer ${getEnv('WHATSAPP_TOKEN')}`,
   'Content-Type': 'application/json',
 });
 
-const url = () => `${API}/${process.env.PHONE_NUMBER_ID}/messages`;
+const url = () => `${API}/${getEnv('PHONE_NUMBER_ID')}/messages`;
 
 async function post(payload) {
   try {
