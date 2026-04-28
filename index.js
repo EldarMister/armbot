@@ -362,17 +362,39 @@ async function checkForUpdates() {
       if (changes.length === 0) continue;
 
       const lastUpdatedAt = new Date().toISOString();
-      await db.obnovitSnapshot(sub.container, newRow, lastUpdatedAt);
 
       const notification =
         `🔔 Обновление по контейнеру *${key}*\n\n` +
         `Изменения:\n${changes.join('\n')}\n\n` +
         `Актуальный статус:\n${formatStatus(newRow, lastUpdatedAt)}`;
 
+      let sentCount = 0;
+      console.log('checkForUpdates: detected changes', {
+        container: key,
+        recipients: sub.phones.length,
+        changes: changes.length,
+      });
+
       for (const phone of sub.phones) {
-        await wa.sendText(phone, notification).catch(err =>
-          console.error(`notify ${phone}:`, err.message)
-        );
+        try {
+          await wa.sendText(phone, notification);
+          sentCount += 1;
+        } catch (err) {
+          console.error('notify failed', {
+            phone,
+            container: key,
+            error: err.response?.data || err.message,
+          });
+        }
+      }
+
+      if (sentCount > 0) {
+        await db.obnovitSnapshot(sub.container, newRow, lastUpdatedAt);
+      } else {
+        console.error('checkForUpdates: snapshot not updated because no WhatsApp notifications were sent', {
+          container: key,
+          recipients: sub.phones.length,
+        });
       }
     }
   } catch (err) {
