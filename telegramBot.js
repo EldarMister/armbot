@@ -92,17 +92,29 @@ async function sendDocs(chatId, containerNomer) {
   }
 }
 
-// ─── Проверка обновлений каждый час ──────────────────────────────────────────
+// ─── Проверка обновлений каждые 5 минут ─────────────────────────────────────
 
 async function checkForUpdates() {
+  const summary = {
+    subscriptions: 0,
+    changed: 0,
+    sent: 0,
+    failed: 0,
+    missing: 0,
+  };
+
   try {
     const subs = await db.getVseSubscriptions();
-    if (subs.length === 0) return;
+    summary.subscriptions = subs.length;
+    if (subs.length === 0) return summary;
     const rows = await loadSheetFresh();
     for (const sub of subs) {
       const key = extractContainerNumber(sub.container) || normalizeContainerKey(sub.container);
       const newRow = rows.find(r => extractContainerNumber(r[0]) === key);
-      if (!newRow) continue;
+      if (!newRow) {
+        summary.missing += 1;
+        continue;
+      }
 
       const oldSnap = Array.isArray(sub.snapshot) ? sub.snapshot : [];
       const izmeneniya = [];
@@ -112,6 +124,7 @@ async function checkForUpdates() {
         if (oldVal !== newVal) izmeneniya.push(`${label}: ${oldVal || '—'} → ${newVal || '—'}`);
       }
       if (izmeneniya.length === 0) continue;
+      summary.changed += 1;
 
       const lastUpdatedAt = new Date().toISOString();
 
@@ -125,7 +138,9 @@ async function checkForUpdates() {
         try {
           await bot.sendMessage(cid, text, { parse_mode: 'Markdown' });
           sentCount += 1;
+          summary.sent += 1;
         } catch (err) {
+          summary.failed += 1;
           console.error(`notify ${cid}:`, err.message);
         }
       }
@@ -134,7 +149,12 @@ async function checkForUpdates() {
         await db.obnovitSnapshot(sub.container, newRow, lastUpdatedAt);
       }
     }
-  } catch (err) { console.error('checkForUpdates error:', err.message); }
+  } catch (err) {
+    summary.failed += 1;
+    console.error('checkForUpdates error:', err.message);
+  }
+
+  return summary;
 }
 
 setInterval(checkForUpdates, 5 * 60 * 1000);
@@ -426,9 +446,14 @@ bot.on('message', async (msg) => {
 
 bot.on('polling_error', (err) => { console.error('polling error:', err.message); });
 
-db.initDB().then(() => {
+const ready = db.initDB().then(() => {
   console.log('🤖 ARM SHORING Telegram бот запущен');
 }).catch(err => {
   console.error('DB init error:', err.message);
   process.exit(1);
 });
+
+module.exports = {
+  checkForUpdates,
+  ready,
+};

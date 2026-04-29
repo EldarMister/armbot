@@ -1,10 +1,12 @@
 require('dotenv').config();
 const crypto = require('crypto');
+const axios = require('axios');
 const express = require('express');
 const { findKontejner, formatStatus, loadSheetFresh, WATCHABLE_FIELDS } = require('./sheets');
 const { getContainerFiles } = require('./drive');
 const wa = require('./whatsapp');
 const db = require('./db');
+const telegramDb = require('./telegramDb');
 const { renderAdminPage, renderLoginPage } = require('./adminPage');
 const { extractContainerNumber, getEnv, normalizeContainerKey } = require('./env');
 
@@ -28,6 +30,9 @@ app.use(express.urlencoded({ extended: false }));
 const userState = new Map();
 const ADMIN_COOKIE_NAME = 'arm_admin_session';
 const ADMIN_SESSION_TTL_MS = 12 * 60 * 60 * 1000;
+const TELEGRAM_ROLES = new Set(['admin', 'staff', 'user']);
+let telegramRuntime = null;
+let telegramDbReady = null;
 
 // ─── Авторизация для раздела «Документы» ────────────────────────────────────
 
@@ -246,6 +251,51 @@ async function sendDocumentLogged(phone, link, filename) {
   return result;
 }
 
+async function ensureTelegramAdminReady() {
+  if (telegramRuntime?.ready) await telegramRuntime.ready;
+  if (!telegramRuntime) {
+    if (!telegramDbReady) telegramDbReady = telegramDb.initDB();
+    await telegramDbReady;
+  }
+}
+
+function getEncarAdminBaseUrl() {
+  return (getEnv('ENCAR_ADMIN_URL') || getEnv('ENCAR_ADMIN_BASE_URL') || '').replace(/\/+$/, '');
+}
+
+function getEncarAdminToken() {
+  return getEnv('ENCAR_ADMIN_TOKEN') || getEnv('ENCAR_ADMIN_API_TOKEN') || getEnv('ENCAR_ADMIN_PASSWORD') || '';
+}
+
+async function proxyEncarAdminApi(req, res, apiPath) {
+  const baseUrl = getEncarAdminBaseUrl();
+  const token = getEncarAdminToken();
+  if (!baseUrl || !token) {
+    return res.status(503).json({
+      error: 'Set ENCAR_ADMIN_URL and ENCAR_ADMIN_TOKEN to connect Encar admin',
+      configured: false,
+    });
+  }
+
+  try {
+    const query = req.originalUrl.includes('?') ? req.originalUrl.slice(req.originalUrl.indexOf('?')) : '';
+    const upstream = await axios({
+      method: req.method,
+      url: `${baseUrl}/admin/api/${apiPath}${query}`,
+      headers: {
+        'X-Admin-Token': token,
+      },
+      data: ['GET', 'HEAD'].includes(req.method) ? undefined : req.body,
+      validateStatus: () => true,
+      timeout: 30000,
+    });
+    return res.status(upstream.status).json(upstream.data);
+  } catch (err) {
+    console.error('encar admin proxy error:', err.response?.data || err.message);
+    return res.status(502).json({ error: 'Failed to reach Encar admin' });
+  }
+}
+
 app.get('/admin/login', (req, res) => {
   if (getAdminSessionUser(req)) {
     return res.redirect(sanitizeAdminNext(req.query.next));
@@ -388,6 +438,93 @@ app.post('/admin/api/subscriptions/check', async (req, res) => {
     console.error('admin check subscriptions error:', err.message);
     res.status(500).json({ error: 'Failed to run subscription check' });
   }
+});
+
+app.get('/admin/api/telegram/users', async (req, res) => {
+  try {
+    await ensureTelegramAdminReady();
+    const users = await telegramDb.getAllUsers();
+    res.json({ users });
+  } catch (err) {
+    console.error('admin list telegram users error:', err.message);
+    res.status(500).json({ error: 'Failed to load Telegram users' });
+  }
+});
+
+app.post('/admin/api/telegram/users', async (req, res) => {
+  const chatId = String(req.body?.chat_id || req.body?.chatId || '').replace(/\s+/g, '').trim();
+  const role = String(req.body?.role || 'user').trim().toLowerCase();
+  const name = String(req.body?.name || '').trim();
+  const username = String(req.body?.username || '').replace(/^@/, '').trim();
+  if (!chatId || !/^-?\d+$/.test(chatId)) return res.status(400).json({ error: 'Telegram chat_id is required' });
+  if (!TELEGRAM_ROLES.has(role)) return res.status(400).json({ error: 'Invalid role' });
+
+  try {
+    await ensureTelegramAdminReady();
+    await telegramDb.setUser(chatId, role, name || null, username || null);
+    const user = await telegramDb.getUser(chatId);
+    res.json({ ok: true, user });
+  } catch (err) {
+    console.error('admin save telegram user error:', err.message);
+    res.status(500).json({ error: 'Failed to save Telegram user' });
+  }
+});
+
+app.delete('/admin/api/telegram/users/:chatId', async (req, res) => {
+  try {
+    await ensureTelegramAdminReady();
+    const ok = await telegramDb.deleteUser(req.params.chatId);
+    res.json({ ok });
+  } catch (err) {
+    console.error('admin delete telegram user error:', err.message);
+    res.status(500).json({ error: 'Failed to delete Telegram user' });
+  }
+});
+
+app.get('/admin/api/telegram/subscriptions', async (req, res) => {
+  try {
+    await ensureTelegramAdminReady();
+    const subscriptions = await telegramDb.getVseSubscriptions();
+    res.json({
+      subscriptions: subscriptions
+        .map(item => ({
+          container: item.container,
+          chat_ids: item.chat_ids || [],
+          chat_count: (item.chat_ids || []).length,
+          last_updated_at: item.last_updated_at,
+        }))
+        .sort((a, b) => String(a.container).localeCompare(String(b.container))),
+    });
+  } catch (err) {
+    console.error('admin list telegram subscriptions error:', err.message);
+    res.status(500).json({ error: 'Failed to load Telegram subscriptions' });
+  }
+});
+
+app.post('/admin/api/telegram/subscriptions/check', async (req, res) => {
+  if (!telegramRuntime?.checkForUpdates) {
+    return res.status(503).json({ error: 'Telegram bot runtime is disabled' });
+  }
+  try {
+    const summary = await telegramRuntime.checkForUpdates();
+    res.json({ ok: true, summary });
+  } catch (err) {
+    console.error('admin check telegram subscriptions error:', err.message);
+    res.status(500).json({ error: 'Failed to run Telegram subscription check' });
+  }
+});
+
+app.get('/admin/api/encar/status', (req, res) => {
+  const baseUrl = getEncarAdminBaseUrl();
+  res.json({
+    configured: Boolean(baseUrl && getEncarAdminToken()),
+    baseUrl: baseUrl || null,
+  });
+});
+
+app.all('/admin/api/encar/*', (req, res) => {
+  const apiPath = req.params[0] || '';
+  return proxyEncarAdminApi(req, res, apiPath);
 });
 
 // ─── Проверка обновлений (каждые 5 минут) ────────────────────────────────────
@@ -696,7 +833,7 @@ const PORT = process.env.PORT || 3000;
 db.initDB().then(() => {
   app.listen(PORT, () => console.log(`сервер на порту ${PORT}`));
   if (getEnv('TELEGRAM_BOT_TOKEN') && getEnv('ENABLE_TELEGRAM_BOT') !== 'false') {
-    require('./telegramBot');
+    telegramRuntime = require('./telegramBot');
   } else {
     console.log('tg: skipped (TELEGRAM_BOT_TOKEN is not set or ENABLE_TELEGRAM_BOT=false)');
   }
