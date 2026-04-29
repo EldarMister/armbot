@@ -194,15 +194,16 @@ async function listChats() {
   return res.rows;
 }
 
-async function listMessages(phone, limit = 100) {
+async function listMessages(phone, limit = 5000) {
   const key = normalizePhone(phone);
+  const safeLimit = Math.min(Math.max(Number(limit) || 5000, 1), 10000);
   const res = await pool.query(`
     SELECT id, phone, direction, body, message_id, created_at
     FROM wa_messages
     WHERE phone = $1
     ORDER BY created_at DESC, id DESC
     LIMIT $2
-  `, [key, limit]);
+  `, [key, safeLimit]);
   return res.rows.reverse();
 }
 

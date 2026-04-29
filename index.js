@@ -215,6 +215,37 @@ function accessFromEnv() {
   }));
 }
 
+async function saveOutgoingMessage(phone, result, fallbackBody = '') {
+  const body = result?.adminBody || fallbackBody;
+  if (!body) return;
+  const messageId = result?.data?.messages?.[0]?.id || null;
+  await db.saveMessage(phone, 'out', body, messageId);
+}
+
+async function sendTextLogged(phone, text) {
+  const result = await wa.sendText(phone, text);
+  await saveOutgoingMessage(phone, result, text);
+  return result;
+}
+
+async function sendTextWithHomeLogged(phone, text) {
+  const result = await wa.sendTextWithHome(phone, text);
+  await saveOutgoingMessage(phone, result, text);
+  return result;
+}
+
+async function sendWelcomeLogged(phone, withDocs = false) {
+  const result = await wa.sendWelcome(phone, withDocs);
+  await saveOutgoingMessage(phone, result, '[welcome]');
+  return result;
+}
+
+async function sendDocumentLogged(phone, link, filename) {
+  const result = await wa.sendDocument(phone, link, filename);
+  await saveOutgoingMessage(phone, result, `[document] ${filename || link || ''}`.trim());
+  return result;
+}
+
 app.get('/admin/login', (req, res) => {
   if (getAdminSessionUser(req)) {
     return res.redirect(sanitizeAdminNext(req.query.next));
@@ -274,7 +305,7 @@ app.get('/admin/api/chats', async (req, res) => {
 
 app.get('/admin/api/chats/:phone/messages', async (req, res) => {
   try {
-    const messages = await db.listMessages(req.params.phone);
+    const messages = await db.listMessages(req.params.phone, req.query.limit);
     res.json({ messages });
   } catch (err) {
     console.error('admin list messages error:', err.message);
@@ -451,29 +482,29 @@ async function sendDocs(phone, containerNomer) {
     const files = await getContainerFiles(containerNomer);
 
     if (files === null) {
-      await wa.sendText(phone,
+      await sendTextLogged(phone,
         `📁 Папка для контейнера *${key}* не найдена.\n\nВозможно, документы ещё не загружены.`
       );
       return;
     }
 
     if (files.length === 0) {
-      await wa.sendText(phone,
+      await sendTextLogged(phone,
         `📂 Папка контейнера *${key}* пуста — документы ещё не загружены.`
       );
       return;
     }
 
-    await wa.sendText(phone, `📄 Документы по контейнеру *${key}* — ${files.length} файл(ов):`);
+    await sendTextLogged(phone, `📄 Документы по контейнеру *${key}* — ${files.length} файл(ов):`);
 
     for (const file of files) {
-      await wa.sendDocument(phone, file.url, file.name).catch(async () => {
-        await wa.sendText(phone, `📋 *${file.path || file.name}*\n🔗 ${file.viewUrl}`);
+      await sendDocumentLogged(phone, file.url, file.name).catch(async () => {
+        await sendTextLogged(phone, `📋 *${file.path || file.name}*\n🔗 ${file.viewUrl}`);
       });
     }
   } catch (err) {
     console.error('sendDocs error:', err.message);
-    await wa.sendText(phone, '⚠️ Не удалось получить документы. Попробуйте позже.');
+    await sendTextLogged(phone, '⚠️ Не удалось получить документы. Попробуйте позже.');
   }
 }
 
@@ -542,23 +573,23 @@ app.post('/webhook', async (req, res) => {
 
       if (btnId === 'btn_home' || btnCommand === 'наглавную') {
         userState.set(from, 'idle');
-        await wa.sendWelcome(from, await isAllowed(from));
+        await sendWelcomeLogged(from, await isAllowed(from));
         return;
       }
 
       if (btnId === 'btn_status' || btnCommand === 'статус') {
         userState.set(from, 'wait_nomer');
-        await wa.sendText(from, '📦 Введите номер контейнера:');
+        await sendTextLogged(from, '📦 Введите номер контейнера:');
         return;
       }
 
       if (btnId === 'btn_docs' || btnCommand === 'документы') {
         if (!(await isAllowed(from))) {
-          await wa.sendText(from, '🚫 У вас нет доступа к этому разделу.');
+          await sendTextLogged(from, '🚫 У вас нет доступа к этому разделу.');
           return;
         }
         userState.set(from, 'wait_docs_nomer');
-        await wa.sendText(from, '📄 Введите номер контейнера для получения документов:');
+        await sendTextLogged(from, '📄 Введите номер контейнера для получения документов:');
         return;
       }
 
@@ -580,31 +611,31 @@ app.post('/webhook', async (req, res) => {
     if (/^(\/?start|привет|здравствуйте|меню|menu|hi|hello|салам|башта)$/i.test(tekst) ||
         ['start', 'привет', 'здравствуйте', 'меню', 'menu', 'hi', 'hello', 'салам', 'башта'].includes(command)) {
       userState.set(from, 'idle');
-      await wa.sendWelcome(from, await isAllowed(from));
+      await sendWelcomeLogged(from, await isAllowed(from));
       return;
     }
 
     // ── Текстовый запрос статуса ──────────────────────────────────────────────
     if (/^статус$/i.test(tekst) || command === 'статус') {
       userState.set(from, 'wait_nomer');
-      await wa.sendText(from, '📦 Введите номер контейнера:');
+      await sendTextLogged(from, '📦 Введите номер контейнера:');
       return;
     }
 
     if (command === 'документы') {
       if (!(await isAllowed(from))) {
-        await wa.sendText(from, '🚫 У вас нет доступа к этому разделу.');
+        await sendTextLogged(from, '🚫 У вас нет доступа к этому разделу.');
         return;
       }
       userState.set(from, 'wait_docs_nomer');
-      await wa.sendText(from, '📄 Введите номер контейнера для получения документов:');
+      await sendTextLogged(from, '📄 Введите номер контейнера для получения документов:');
       return;
     }
 
     // ── Отписка ───────────────────────────────────────────────────────────────
     if (/^отписаться$/i.test(tekst) || command === 'отписаться') {
       const count = await db.otpisat(from);
-      await wa.sendText(
+      await sendTextLogged(
         from,
         count > 0
           ? `✅ Вы отписались от обновлений по ${count} контейнер(ам).`
@@ -627,22 +658,22 @@ app.post('/webhook', async (req, res) => {
       try {
         const row = await findKontejner(tekst);
         if (!row) {
-          await wa.sendTextWithHome(from,
+          await sendTextWithHomeLogged(from,
             'Здравствуйте! 😊\n\n📦 Трекинг контейнера появляется через 5 дней после погрузки.\n\n🔎 Пожалуйста, проверьте правильность номера контейнера.'
           );
           return;
         }
         const sub = await db.getSubscription(tekst);
-        await wa.sendTextWithHome(from, formatStatus(row, sub?.last_updated_at));
+        await sendTextWithHomeLogged(from, formatStatus(row, sub?.last_updated_at));
         await db.podpisat(from, extractContainerNumber(tekst) || tekst, row);
       } catch (err) {
         console.error('sheet error:', err.message);
-        await wa.sendText(from, '⚠️ Не удалось получить данные. Попробуйте позже.');
+        await sendTextLogged(from, '⚠️ Не удалось получить данные. Попробуйте позже.');
       }
       return;
     }
 
-    await wa.sendWelcome(from, await isAllowed(from));
+    await sendWelcomeLogged(from, await isAllowed(from));
 
   } catch (err) {
     console.error('webhook error:', err.message);

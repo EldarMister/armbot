@@ -20,16 +20,18 @@ async function post(payload) {
 }
 
 async function sendText(to, text) {
-  return post({
+  const response = await post({
     messaging_product: 'whatsapp',
     to,
     type: 'text',
     text: { body: text, preview_url: false },
   });
+  response.adminBody = text;
+  return response;
 }
 
 async function sendTextWithHome(to, text) {
-  return post({
+  const response = await post({
     messaging_product: 'whatsapp',
     to,
     type: 'interactive',
@@ -43,6 +45,8 @@ async function sendTextWithHome(to, text) {
       },
     },
   });
+  response.adminBody = text;
+  return response;
 }
 
 /**
@@ -67,7 +71,7 @@ async function sendWelcome(to, withDocs = false) {
     buttons.push({ type: 'reply', reply: { id: 'btn_docs', title: '📄 Документы' } });
   }
 
-  return post({
+  const response = await post({
     messaging_product: 'whatsapp',
     to,
     type: 'interactive',
@@ -77,6 +81,8 @@ async function sendWelcome(to, withDocs = false) {
       action: { buttons },
     },
   });
+  response.adminBody = body;
+  return response;
 }
 
 /**
@@ -84,12 +90,14 @@ async function sendWelcome(to, withDocs = false) {
  * link должен быть публично доступным URL.
  */
 async function sendDocument(to, link, filename) {
-  return post({
+  const response = await post({
     messaging_product: 'whatsapp',
     to,
     type: 'document',
     document: { link, filename },
   });
+  response.adminBody = `[document] ${filename || link || ''}`.trim();
+  return response;
 }
 
 // markRead не кидает ошибку — просто игнорируем если упало

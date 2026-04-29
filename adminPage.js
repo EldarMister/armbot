@@ -256,37 +256,42 @@ function renderAdminPage({ user = 'admin' } = {}) {
       overflow: auto;
       padding: 12px 14px;
       background: #fafbfc;
-      display: flex;
-      flex-direction: column;
-      align-items: flex-start;
-      gap: 8px;
+      display: block;
     }
     .empty {
       color: var(--muted);
       padding: 16px;
     }
     .msg {
-      width: fit-content;
-      max-width: min(560px, 76%);
+      display: block;
+      width: max-content;
+      max-width: min(720px, 86%);
       min-height: 0;
       height: auto;
-      margin: 0;
+      margin: 0 0 8px;
       padding: 7px 9px;
       border-radius: 7px;
       border: 1px solid var(--line);
       background: #fff;
       font-size: 14px;
-      line-height: 1.35;
+      line-height: 1.4;
       white-space: normal;
+      overflow: visible;
+    }
+    .msg.in {
+      margin-right: auto;
     }
     .msg.out {
-      align-self: flex-end;
+      margin-left: auto;
       background: #e8f5f3;
       border-color: #c8e7e3;
     }
     .msg-body {
-      white-space: pre-wrap;
+      display: block;
+      white-space: pre-line;
       overflow-wrap: anywhere;
+      word-break: break-word;
+      line-height: 1.4;
     }
     .msg-time {
       margin-top: 4px;
@@ -477,6 +482,12 @@ function renderAdminPage({ user = 'admin' } = {}) {
       }[ch]));
     }
 
+    function formatMessageBody(value) {
+      return esc(String(value ?? '').trim())
+        .replace(/\\*([^*\\n]{1,160})\\*/g, '<strong>$1</strong>')
+        .replace(/_([^_\\n]{1,160})_/g, '<em>$1</em>');
+    }
+
     function setStatus(text) {
       document.getElementById('status').textContent = text;
     }
@@ -555,7 +566,7 @@ function renderAdminPage({ user = 'admin' } = {}) {
       document.getElementById('grantSelected').disabled = false;
       document.getElementById('messages').innerHTML = '<div class="empty">Загрузка...</div>';
       try {
-        const data = await api('/admin/api/chats/' + encodeURIComponent(phone) + '/messages');
+        const data = await api('/admin/api/chats/' + encodeURIComponent(phone) + '/messages?limit=5000');
         renderMessages(data.messages || []);
       } catch (err) {
         document.getElementById('messages').innerHTML = '<div class="empty">' + esc(err.message) + '</div>';
@@ -566,7 +577,7 @@ function renderAdminPage({ user = 'admin' } = {}) {
       const root = document.getElementById('messages');
       root.innerHTML = messages.length ? messages.map(msg => \`
         <div class="msg \${msg.direction === 'out' ? 'out' : 'in'}">
-          <div class="msg-body">\${esc(String(msg.body || '').trim())}</div>
+          <div class="msg-body">\${formatMessageBody(msg.body)}</div>
           <div class="msg-time">\${msg.direction === 'out' ? 'Вы' : esc(msg.phone)} · \${esc(fmtDate(msg.created_at))}</div>
         </div>
       \`).join('') : '<div class="empty">История пуста.</div>';
