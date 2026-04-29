@@ -695,6 +695,11 @@ const PORT = process.env.PORT || 3000;
 
 db.initDB().then(() => {
   app.listen(PORT, () => console.log(`сервер на порту ${PORT}`));
+  if (getEnv('TELEGRAM_BOT_TOKEN') && getEnv('ENABLE_TELEGRAM_BOT') !== 'false') {
+    require('./telegramBot');
+  } else {
+    console.log('tg: skipped (TELEGRAM_BOT_TOKEN is not set or ENABLE_TELEGRAM_BOT=false)');
+  }
 }).catch(err => {
   console.error('DB init error:', err.message);
   process.exit(1);

@@ -1,12 +1,16 @@
 const { google } = require('googleapis');
 const {
   containerInputMatchesFolder,
+  extractContainerNumber,
   getEnv,
   getMultilineEnv,
+  normalizeFolderName,
 } = require('./env');
 
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
+const DRIVE_CACHE_TTL = 60 * 1000;
 const nameCollator = new Intl.Collator('en', { numeric: true, sensitivity: 'base' });
+const filesCache = new Map();
 
 function getDrive() {
   const auth = new google.auth.GoogleAuth({
@@ -34,7 +38,7 @@ async function listChildren(drive, folderId) {
   do {
     const res = await drive.files.list({
       q: `'${folderId}' in parents and trashed = false`,
-      fields: 'nextPageToken, files(id, name, mimeType)',
+      fields: 'nextPageToken, files(id, name, mimeType, size)',
       pageSize: 1000,
       pageToken,
     });
@@ -73,10 +77,8 @@ async function flattenFiles(drive, folderId, prefix = '') {
       continue;
     }
     result.push({
-      id: item.id,
-      name: item.name,
+      ...item,
       path,
-      mimeType: item.mimeType,
       url: `https://drive.google.com/uc?export=download&id=${item.id}`,
       viewUrl: `https://drive.google.com/file/d/${item.id}/view`,
     });
@@ -85,12 +87,27 @@ async function flattenFiles(drive, folderId, prefix = '') {
 }
 
 async function getContainerFiles(containerNomer) {
+  const cacheKey = extractContainerNumber(containerNomer) || normalizeFolderName(containerNomer);
+  const cached = filesCache.get(cacheKey);
+  if (cached && Date.now() - cached.ts < DRIVE_CACHE_TTL) return cached.files;
+
   const drive = getDrive();
   const parentId = getEnv('GOOGLE_DRIVE_FOLDER_ID');
   const folder = await findContainerFolder(drive, parentId, containerNomer);
 
   if (!folder) return null;
-  return flattenFiles(drive, folder.id);
+  const files = await flattenFiles(drive, folder.id);
+  filesCache.set(cacheKey, { files, ts: Date.now() });
+  return files;
 }
 
-module.exports = { getContainerFiles };
+async function downloadFile(fileId) {
+  const drive = getDrive();
+  const res = await drive.files.get(
+    { fileId, alt: 'media' },
+    { responseType: 'stream' }
+  );
+  return res.data;
+}
+
+module.exports = { getContainerFiles, downloadFile };

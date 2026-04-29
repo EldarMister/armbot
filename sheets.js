@@ -4,6 +4,7 @@ const { extractContainerNumber, getEnv, normalizeContainerKey } = require('./env
 
 const CACHE_TTL = 60 * 1000;
 let cache = { data: null, ts: 0 };
+let freshLoadPromise = null;
 
 const COL = {
   kontejner:   0,
@@ -55,8 +56,15 @@ async function loadSheet() {
 }
 
 async function loadSheetFresh() {
+  const now = Date.now();
+  if (cache.data && now - cache.ts < CACHE_TTL) return cache.data;
+  if (freshLoadPromise) return freshLoadPromise;
+
   cache = { data: null, ts: 0 };
-  return loadSheet();
+  freshLoadPromise = loadSheet().finally(() => {
+    freshLoadPromise = null;
+  });
+  return freshLoadPromise;
 }
 
 function getCol(row, idx) {
@@ -90,8 +98,22 @@ async function findKontejner(nomer) {
   }) || null;
 }
 
-function formatStatus(row) {
+// obnovleno — ISO-строка, если бот сам зафиксировал время последнего изменения
+function formatStatus(row, obnovleno = null) {
   const f = idx => getCol(row, idx);
+
+  let obnovStr = '—';
+  if (obnovleno) {
+    const d = new Date(obnovleno);
+    obnovStr = d.toLocaleString('ru-RU', {
+      day: '2-digit', month: '2-digit', year: 'numeric',
+      hour: '2-digit', minute: '2-digit',
+      timeZone: 'Asia/Bishkek',
+    });
+  } else if (f(COL.updated) !== '—') {
+    obnovStr = f(COL.updated);
+  }
+
   return `📦 *Контейнер:* ${f(COL.kontejner)}
 🔘 *Статус:* ${computeStatus(row)}
 
@@ -106,7 +128,7 @@ function formatStatus(row) {
 📱 Тел. водителя: ${f(COL.phone)}
 🛂 Граница: ${f(COL.granica)}
 🏠 Прибытие: ${f(COL.pribytie)}
-🕐 Обновлено: ${f(COL.updated)}`;
+🕐 Обновлено: ${obnovStr}`;
 }
 
 module.exports = { findKontejner, formatStatus, loadSheetFresh, WATCHABLE_FIELDS };
