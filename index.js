@@ -1,6 +1,5 @@
 require('dotenv').config();
 const crypto = require('crypto');
-const axios = require('axios');
 const express = require('express');
 const { findKontejner, formatStatus, loadSheetFresh, WATCHABLE_FIELDS } = require('./sheets');
 const { getContainerFiles } = require('./drive');
@@ -259,43 +258,6 @@ async function ensureTelegramAdminReady() {
   }
 }
 
-function getEncarAdminBaseUrl() {
-  return (getEnv('ENCAR_ADMIN_URL') || getEnv('ENCAR_ADMIN_BASE_URL') || '').replace(/\/+$/, '');
-}
-
-function getEncarAdminToken() {
-  return getEnv('ENCAR_ADMIN_TOKEN') || getEnv('ENCAR_ADMIN_API_TOKEN') || getEnv('ENCAR_ADMIN_PASSWORD') || '';
-}
-
-async function proxyEncarAdminApi(req, res, apiPath) {
-  const baseUrl = getEncarAdminBaseUrl();
-  const token = getEncarAdminToken();
-  if (!baseUrl || !token) {
-    return res.status(503).json({
-      error: 'Set ENCAR_ADMIN_URL and ENCAR_ADMIN_TOKEN to connect Encar admin',
-      configured: false,
-    });
-  }
-
-  try {
-    const query = req.originalUrl.includes('?') ? req.originalUrl.slice(req.originalUrl.indexOf('?')) : '';
-    const upstream = await axios({
-      method: req.method,
-      url: `${baseUrl}/admin/api/${apiPath}${query}`,
-      headers: {
-        'X-Admin-Token': token,
-      },
-      data: ['GET', 'HEAD'].includes(req.method) ? undefined : req.body,
-      validateStatus: () => true,
-      timeout: 30000,
-    });
-    return res.status(upstream.status).json(upstream.data);
-  } catch (err) {
-    console.error('encar admin proxy error:', err.response?.data || err.message);
-    return res.status(502).json({ error: 'Failed to reach Encar admin' });
-  }
-}
-
 app.get('/admin/login', (req, res) => {
   if (getAdminSessionUser(req)) {
     return res.redirect(sanitizeAdminNext(req.query.next));
@@ -512,19 +474,6 @@ app.post('/admin/api/telegram/subscriptions/check', async (req, res) => {
     console.error('admin check telegram subscriptions error:', err.message);
     res.status(500).json({ error: 'Failed to run Telegram subscription check' });
   }
-});
-
-app.get('/admin/api/encar/status', (req, res) => {
-  const baseUrl = getEncarAdminBaseUrl();
-  res.json({
-    configured: Boolean(baseUrl && getEncarAdminToken()),
-    baseUrl: baseUrl || null,
-  });
-});
-
-app.all('/admin/api/encar/*', (req, res) => {
-  const apiPath = req.params[0] || '';
-  return proxyEncarAdminApi(req, res, apiPath);
 });
 
 // ─── Проверка обновлений (каждые 5 минут) ────────────────────────────────────

@@ -80,7 +80,7 @@ function renderLoginPage({ next = '/admin', error = '' } = {}) {
 <body>
   <form class="login" method="post" action="/admin/login" autocomplete="on">
     <h1>ARM Admin</h1>
-    <p class="hint">Единая панель для WhatsApp, ARM Telegram и Encar Fresh.</p>
+    <p class="hint">Единая панель для WhatsApp и ARM Telegram.</p>
     ${error ? `<div class="error">${escapeHtml(error)}</div>` : ''}
     <input type="hidden" name="next" value="${escapeHtml(next)}">
     <label for="user">Логин</label>
@@ -399,7 +399,6 @@ function renderAdminPage({ user = 'admin' } = {}) {
   <nav class="tabs">
     <button class="tab active" data-tab="whatsapp" type="button">WhatsApp ARM</button>
     <button class="tab" data-tab="telegram" type="button">Telegram ARM</button>
-    <button class="tab" data-tab="encar" type="button">Encar Fresh</button>
   </nav>
 
   <main>
@@ -481,38 +480,6 @@ function renderAdminPage({ user = 'admin' } = {}) {
       </div>
     </div>
 
-    <div class="tab-panel" id="tab-encar">
-      <div class="admin-grid">
-        <section class="wide-panel">
-          <div>
-            <div class="section-head">
-              <div class="section-title">Encar Fresh Bot</div>
-              <button class="secondary" onclick="loadEncar()">Обновить</button>
-            </div>
-            <div class="card-grid" id="encarStats"></div>
-          </div>
-          <div class="list" id="encarUsers"></div>
-        </section>
-
-        <section class="wide-panel">
-          <div>
-            <div class="section-head">
-              <div class="section-title">Действия и логи</div>
-              <button class="secondary" onclick="loadEncarLogs()">Логи</button>
-            </div>
-            <div class="action-block">
-              <textarea id="encarBroadcastText" rows="3" placeholder="Сообщение всем пользователям Encar Fresh"></textarea>
-              <div class="toolbar">
-                <button onclick="sendEncarBroadcast()">Рассылка</button>
-                <button class="secondary" onclick="encarStopAll()">Остановить всех</button>
-                <button class="danger" onclick="encarClearSeen()">Очистить seen</button>
-              </div>
-            </div>
-          </div>
-          <div class="log-box" id="encarLogs">Логи появятся здесь.</div>
-        </section>
-      </div>
-    </div>
   </main>
 
   <script>
@@ -523,7 +490,6 @@ function renderAdminPage({ user = 'admin' } = {}) {
     var selectedPhone = null;
     var telegramUsers = [];
     var telegramSubscriptions = [];
-    var encarConfigured = false;
 
     async function api(url, options) {
       options = options || {};
@@ -584,7 +550,6 @@ function renderAdminPage({ user = 'admin' } = {}) {
         });
         if (activeTab === 'whatsapp') loadWhatsapp();
         if (activeTab === 'telegram') loadTelegram();
-        if (activeTab === 'encar') loadEncar();
       });
     });
 
@@ -820,111 +785,6 @@ function renderAdminPage({ user = 'admin' } = {}) {
       } catch (err) {
         setStatus(err.message);
       }
-    }
-
-    async function loadEncar() {
-      try {
-        setStatus('Загрузка Encar...');
-        var status = await api('/admin/api/encar/status');
-        encarConfigured = Boolean(status.configured);
-        if (!encarConfigured) {
-          document.getElementById('encarStats').innerHTML = '<div class="empty">Укажите ENCAR_ADMIN_URL и ENCAR_ADMIN_TOKEN в Railway env основного arm проекта.</div>';
-          document.getElementById('encarUsers').innerHTML = '';
-          document.getElementById('encarLogs').textContent = 'Encar admin не подключен.';
-          setStatus('Encar не подключен');
-          return;
-        }
-        var data = await Promise.all([
-          api('/admin/api/encar/stats'),
-          api('/admin/api/encar/users'),
-          api('/admin/api/encar/logs?limit=120'),
-        ]);
-        renderEncarStats(data[0]);
-        renderEncarUsers(data[1].users || []);
-        renderEncarLogs(data[2].items || []);
-        setStatus('Готово');
-      } catch (err) {
-        setStatus(err.message);
-      }
-    }
-
-    function renderEncarStats(data) {
-      data = data || {};
-      var users = data.users || {};
-      var seen = data.seen || {};
-      var cards = [
-        ['Пользователи', users.total || 0, 'активных ' + (users.active || 0)],
-        ['Фильтры', users.totalFilters || 0, 'в работе'],
-        ['Seen', seen.listings || seen.total || 0, 'объявлений'],
-        ['Аптайм', data.uptime || '—', 'бот'],
-      ];
-      document.getElementById('encarStats').innerHTML = cards.map(function(card) {
-        return '<div class="stat-card"><div class="meta">' + esc(card[0]) + '</div><div class="stat-value">' + esc(card[1]) + '</div><div class="meta">' + esc(card[2]) + '</div></div>';
-      }).join('');
-    }
-
-    function renderEncarUsers(users) {
-      var root = document.getElementById('encarUsers');
-      root.innerHTML = users.length ? users.map(function(user) {
-        var name = [user.firstName, user.lastName].filter(Boolean).join(' ') || (user.username ? '@' + user.username : 'Без имени');
-        var filters = (user.filters || []).map(function(filter) { return filter.label; }).join(', ') || 'без фильтров';
-        return '<div class="item-row">' +
-          '<div class="toolbar" style="justify-content:space-between;align-items:flex-start">' +
-          '<div><div class="strong">' + esc(user.chatId) + '</div><div class="meta">' + esc(name) + ' · ' + (user.isActive ? 'активен' : 'остановлен') + '</div><div class="meta">' + esc(filters) + '</div></div>' +
-          '<div class="row-actions">' +
-          (user.isActive
-            ? '<button class="danger" onclick="encarUserAction(\\'' + esc(user.chatId) + '\\',\\'stop\\')">Остановить</button>'
-            : '<button onclick="encarUserAction(\\'' + esc(user.chatId) + '\\',\\'start\\')">Запустить</button>') +
-          '</div></div></div>';
-      }).join('') : '<div class="empty">Пользователей Encar пока нет.</div>';
-    }
-
-    function renderEncarLogs(items) {
-      var root = document.getElementById('encarLogs');
-      root.textContent = items.length ? items.map(function(item) {
-        return '[' + (item.level || 'info') + '] ' + (item.ts || item.time || '') + ' ' + (item.text || item.message || '');
-      }).join('\\n') : 'Логов пока нет.';
-    }
-
-    async function loadEncarLogs() {
-      try {
-        var data = await api('/admin/api/encar/logs?limit=300');
-        renderEncarLogs(data.items || []);
-      } catch (err) {
-        setStatus(err.message);
-      }
-    }
-
-    async function encarUserAction(chatId, action) {
-      await api('/admin/api/encar/user/' + encodeURIComponent(chatId) + '/' + action, { method: 'POST' });
-      await loadEncar();
-    }
-
-    async function encarStopAll() {
-      if (!confirm('Остановить парсинг у всех пользователей Encar?')) return;
-      var data = await api('/admin/api/encar/stop-all', { method: 'POST' });
-      setStatus('Остановлено: ' + (data.stopped || 0));
-      await loadEncar();
-    }
-
-    async function encarClearSeen() {
-      if (!confirm('Очистить seen историю Encar? Новые объявления могут отправиться повторно.')) return;
-      var data = await api('/admin/api/encar/clear-seen', { method: 'POST' });
-      setStatus('Очищено: ' + (data.listings || 0) + ' listings, ' + (data.vins || 0) + ' vins');
-      await loadEncar();
-    }
-
-    async function sendEncarBroadcast() {
-      var input = document.getElementById('encarBroadcastText');
-      var text = input.value.trim();
-      if (!text) return;
-      var data = await api('/admin/api/encar/broadcast', {
-        method: 'POST',
-        body: JSON.stringify({ text: text }),
-      });
-      setStatus('Рассылка: отправлено ' + (data.sent || 0) + ', ошибок ' + (data.failed || 0));
-      input.value = '';
-      await loadEncarLogs();
     }
 
     loadWhatsapp();
