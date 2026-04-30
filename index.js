@@ -2,7 +2,7 @@ require('dotenv').config();
 const crypto = require('crypto');
 const express = require('express');
 const { findKontejner, formatStatus, loadSheetFresh, WATCHABLE_FIELDS } = require('./sheets');
-const { getContainerFiles } = require('./drive');
+const { getContainerFiles, downloadFile } = require('./drive');
 const wa = require('./whatsapp');
 const db = require('./db');
 const telegramDb = require('./telegramDb');
@@ -247,6 +247,13 @@ async function sendWelcomeLogged(phone, withDocs = false) {
 async function sendDocumentLogged(phone, link, filename) {
   const result = await wa.sendDocument(phone, link, filename);
   await saveOutgoingMessage(phone, result, `[document] ${filename || link || ''}`.trim());
+  return result;
+}
+
+async function sendDriveFileLogged(phone, file) {
+  const stream = await downloadFile(file.id);
+  const result = await wa.sendUploadedMedia(phone, stream, file.name, file.mimeType);
+  await saveOutgoingMessage(phone, result, `[file] ${file.name || file.id || ''}`.trim());
   return result;
 }
 
@@ -584,7 +591,8 @@ async function sendDocs(phone, containerNomer) {
     await sendTextLogged(phone, `📄 Документы по контейнеру *${key}* — ${files.length} файл(ов):`);
 
     for (const file of files) {
-      await sendDocumentLogged(phone, file.url, file.name).catch(async () => {
+      await sendDriveFileLogged(phone, file).catch(async (err) => {
+        console.error(`sendDriveFile (${file.name}):`, err.message);
         await sendTextLogged(phone, `📋 *${file.path || file.name}*\n🔗 ${file.viewUrl}`);
       });
     }

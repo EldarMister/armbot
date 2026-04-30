@@ -1,14 +1,20 @@
 const axios = require('axios');
+const FormData = require('form-data');
 const { getEnv } = require('./env');
 
 const API = 'https://graph.facebook.com/v20.0';
 
-const headers = () => ({
+const authHeaders = () => ({
   Authorization: `Bearer ${getEnv('WHATSAPP_TOKEN')}`,
+});
+
+const headers = () => ({
+  ...authHeaders(),
   'Content-Type': 'application/json',
 });
 
 const url = () => `${API}/${getEnv('PHONE_NUMBER_ID')}/messages`;
+const mediaUrl = () => `${API}/${getEnv('PHONE_NUMBER_ID')}/media`;
 
 async function post(payload) {
   try {
@@ -100,6 +106,63 @@ async function sendDocument(to, link, filename) {
   return response;
 }
 
+function getMessageMediaType(mimeType) {
+  const type = String(mimeType || '').toLowerCase();
+  if (type === 'image/jpeg' || type === 'image/png') return 'image';
+  if (type.startsWith('video/')) return 'video';
+  if (type.startsWith('audio/')) return 'audio';
+  return 'document';
+}
+
+async function uploadMedia(stream, filename, mimeType) {
+  const type = mimeType || 'application/octet-stream';
+  const form = new FormData();
+  form.append('messaging_product', 'whatsapp');
+  form.append('type', type);
+  form.append('file', stream, {
+    filename: filename || 'document',
+    contentType: type,
+  });
+
+  try {
+    const response = await axios.post(mediaUrl(), form, {
+      headers: {
+        ...authHeaders(),
+        ...form.getHeaders(),
+      },
+      maxBodyLength: Infinity,
+      maxContentLength: Infinity,
+    });
+    const mediaId = response.data?.id;
+    if (!mediaId) throw new Error('Meta media upload did not return id');
+    return mediaId;
+  } catch (err) {
+    console.error('META MEDIA UPLOAD ERROR:', JSON.stringify(err.response?.data || err.message, null, 2));
+    throw err;
+  }
+}
+
+async function sendUploadedMedia(to, stream, filename, mimeType) {
+  const mediaId = await uploadMedia(stream, filename, mimeType);
+  const type = getMessageMediaType(mimeType);
+  const media = { id: mediaId };
+
+  if (type === 'document') {
+    media.filename = filename || 'document';
+  } else if (filename && (type === 'image' || type === 'video')) {
+    media.caption = filename;
+  }
+
+  const response = await post({
+    messaging_product: 'whatsapp',
+    to,
+    type,
+    [type]: media,
+  });
+  response.adminBody = `[${type}] ${filename || mediaId}`.trim();
+  return response;
+}
+
 // markRead не кидает ошибку — просто игнорируем если упало
 async function markRead(messageId) {
   try {
@@ -111,4 +174,4 @@ async function markRead(messageId) {
   } catch (_) {}
 }
 
-module.exports = { sendText, sendTextWithHome, sendWelcome, sendDocument, markRead };
+module.exports = { sendText, sendTextWithHome, sendWelcome, sendDocument, sendUploadedMedia, markRead };
