@@ -9,8 +9,13 @@ const {
 
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
 const DRIVE_CACHE_TTL = 60 * 1000;
+const IGNORED_DRIVE_FOLDERS = new Set(['PASSPORT']);
 const nameCollator = new Intl.Collator('en', { numeric: true, sensitivity: 'base' });
 const filesCache = new Map();
+
+function isIgnoredDriveFolder(name) {
+  return IGNORED_DRIVE_FOLDERS.has(String(name || '').trim().toUpperCase());
+}
 
 function getDrive() {
   const auth = new google.auth.GoogleAuth({
@@ -73,6 +78,7 @@ async function flattenFiles(drive, folderId, prefix = '') {
   for (const item of items) {
     const path = prefix ? `${prefix}/${item.name}` : item.name;
     if (item.mimeType === FOLDER_MIME) {
+      if (isIgnoredDriveFolder(item.name)) continue;
       result.push(...await flattenFiles(drive, item.id, path));
       continue;
     }
